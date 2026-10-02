@@ -1,5 +1,8 @@
+import { FlipClock } from "@/components/study/FlipClock";
 import { FocusTimer } from "@/components/study/FocusTimer";
+import { ProgressPanel } from "@/components/study/ProgressPanel";
 import { RemindersPanel } from "@/components/study/RemindersPanel";
+import { StudyHelperPanel } from "@/components/study/StudyHelperPanel";
 import { TimetablePanel } from "@/components/study/TimetablePanel";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -181,8 +184,10 @@ export default function Dashboard() {
             <FocusTimer subjects={subjects} />
           </div>
 
-          {/* Today's totals */}
-          <section className="paper rounded-sm p-6 sm:p-7">
+          {/* Flip clock + today's totals */}
+          <div className="flex flex-col gap-6">
+            <FlipClock now={now} />
+            <section className="paper rounded-sm p-6 sm:p-7">
             <span className="font-archive text-[10px] text-primary">
               Today&apos;s totals
             </span>
@@ -232,18 +237,25 @@ export default function Dashboard() {
                 </dd>
               </div>
             </dl>
-          </section>
+            </section>
+          </div>
 
           <div className="lg:col-span-2">
             <TimetablePanel entries={timetable} now={now} />
           </div>
           <RemindersPanel reminders={reminders} now={now} />
+
+          <div className="lg:col-span-2">
+            <StudyHelperPanel />
+          </div>
+          <ProgressPanel />
         </div>
 
         <footer className="mt-12 border-t border-border pt-6 text-center sm:text-left">
           <p className="font-archive text-[10px] leading-5 text-muted-foreground">
-            Commonplace · Version 1 — timetable, focus timer, reminders. More of
-            the notebook stays in the drawer until these are perfect.
+            Commonplace · Study Buddy — timetable, focus timer, reminders, XP
+            &amp; scoreboard, notes library, study helper. The rest of the
+            notebook stays in the drawer until these are perfect.
           </p>
         </footer>
       </div>

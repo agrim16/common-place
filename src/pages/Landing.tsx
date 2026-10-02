@@ -4,8 +4,11 @@ import {
   Bell,
   CalendarDays,
   Check,
+  Clock,
   Feather,
+  Sparkles,
   Timer,
+  Trophy,
 } from "lucide-react";
 
 const fadeUp = {
@@ -33,6 +36,24 @@ const pillars = [
     icon: Bell,
     title: "Reminders in the margin",
     body: "Assignments, revisions, and a gentle nudge to touch grass. Tick them off where you wrote them; today's list stays folded into today's page.",
+  },
+  {
+    no: "04",
+    icon: Trophy,
+    title: "XP, levels & the scoreboard",
+    body: "Every focused minute earns a point. Ranks climb from Freshman to Headmaster, and the weekly scoreboard orders the room by minutes actually studied — no streak guilt.",
+  },
+  {
+    no: "05",
+    icon: Sparkles,
+    title: "A helper that has read your notes",
+    body: "Upload your notes and ask the Gemini-backed study helper anything — your progress today, what to study next, or a trick to remember the page.",
+  },
+  {
+    no: "06",
+    icon: Clock,
+    title: "The flip clock",
+    body: "A split-flap station clock in the corner of the desk, flipping the seconds away in typewriter digits. A small thing — but the desk feels alive.",
   },
 ];
 
@@ -108,9 +129,9 @@ export default function Landing() {
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-8 text-foreground/80">
               Commonplace is a study desk for students — a ruled page that holds
-              your week, a timer that rings the bell, and a margin for every
-              reminder. Version one does those three things, and does them
-              quietly.
+              your week, a timer that rings the bell, a margin for every
+              reminder, XP for every focused minute, and a study helper that
+              has read your notes. Version one does those things, quietly.
             </p>
             <div className="mt-9 flex flex-wrap items-center gap-4">
               <a
@@ -130,8 +151,8 @@ export default function Landing() {
               </a>
             </div>
             <p className="font-archive mt-8 text-[10px] leading-5 text-muted-foreground">
-              Timetable · Focus timer · Reminders — nothing else until these
-              three are perfect.
+              Timetable · Focus timer · Reminders · XP &amp; scoreboard · Study
+              helper · Flip clock — done properly, nothing else.
             </p>
           </motion.div>
 
@@ -218,7 +239,7 @@ export default function Landing() {
               Contents · Version 1
             </span>
             <h2 className="mt-4 text-4xl font-medium sm:text-[2.75rem]">
-              Three entries. Nothing pencilled in the margins.
+              Six entries. Nothing pencilled in the margins.
             </h2>
             <p className="mt-4 text-lg leading-8 text-foreground/75">
               The first version exists for one reason: to help students study.
@@ -298,7 +319,8 @@ export default function Landing() {
               ))}
             </ul>
             <p className="font-archive mt-5 border-t border-dashed border-border pt-4 text-[10px] leading-5 text-muted-foreground">
-              Logged: 3 focus sessions · 100 minutes · 2 reminders cleared
+              Logged: 3 focus sessions · 100 minutes · +100 XP · 2 reminders
+              cleared
             </p>
           </motion.div>
         </div>
@@ -315,8 +337,8 @@ export default function Landing() {
               Open the book at a clean page.
             </h2>
             <p className="mx-auto mt-5 max-w-xl text-lg leading-8 text-[#f0e6d2]/75">
-              Sign in with your email, set Tuesday's timetable, and run your
-              first focus session before the kettle boils.
+              Sign in with Google or your email, set Tuesday&apos;s timetable,
+              and run your first focus session before the kettle boils.
             </p>
             <a
               href="/auth?returnTo=%2Fdashboard"

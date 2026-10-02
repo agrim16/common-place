@@ -1,6 +1,11 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
-import { mutation, query, type MutationCtx } from "./_generated/server";
+import {
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 
 const timeFormat = /^\d{2}:[0-5]\d$/;
 
@@ -164,5 +169,165 @@ export const logFocusSession = mutation({
       mode: args.mode.slice(0, 32),
       startedAt: args.startedAt,
     });
+  },
+});
+
+/* ------------------- XP, levels & the scoreboard ------------------- */
+
+export const progress = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return { xp: 0, sessions: 0 };
+    const sessions = await ctx.db
+      .query("focusSessions")
+      .withIndex("by_user_startedAt", (q) => q.eq("userId", userId))
+      .collect();
+    return {
+      xp: sessions.reduce((sum, s) => sum + s.minutes, 0),
+      sessions: sessions.length,
+    };
+  },
+});
+
+/** Weekly minutes per student, ranked. Includes the caller's own row. */
+export const scoreboard = query({
+  args: { since: v.number() },
+  handler: async (ctx, { since }) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return { rows: [], me: null };
+    const sessions = await ctx.db
+      .query("focusSessions")
+      .withIndex("by_startedAt", (q) => q.gte("startedAt", since))
+      .collect();
+
+    const totals = new Map<string, { minutes: number; sessions: number }>();
+    for (const session of sessions) {
+      const current = totals.get(session.userId) ?? { minutes: 0, sessions: 0 };
+      current.minutes += session.minutes;
+      current.sessions += 1;
+      totals.set(session.userId, current);
+    }
+
+    const rows = await Promise.all(
+      [...totals.entries()].map(async ([id, total]) => {
+        const user = await ctx.db.get(id as Id<"users">);
+        return {
+          userId: id,
+          name: user?.name ?? user?.email ?? "Anonymous student",
+          minutes: total.minutes,
+          sessions: total.sessions,
+          isMe: id === userId,
+        };
+      }),
+    );
+    rows.sort(
+      (a, b) => b.minutes - a.minutes || b.sessions - a.sessions,
+    );
+    const ranked = rows.map((row, index) => ({ ...row, rank: index + 1 }));
+    return {
+      rows: ranked.slice(0, 8),
+      me: ranked.find((row) => row.isMe) ?? null,
+    };
+  },
+});
+
+/* --------------------------- Notes library --------------------------- */
+
+export const listNotes = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const notes = await ctx.db
+      .query("notes")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    return notes.sort((a, b) => b.createdAt - a.createdAt);
+  },
+});
+
+export const createNote = mutation({
+  args: { title: v.string(), body: v.string() },
+  handler: async (ctx, { title, body }) => {
+    const userId = await requireUser(ctx);
+    const trimmedTitle = title.trim();
+    const trimmedBody = body.trim();
+    if (!trimmedTitle) throw new Error("Give the note a title");
+    if (!trimmedBody) throw new Error("The note is empty");
+    await ctx.db.insert("notes", {
+      userId,
+      title: trimmedTitle.slice(0, 120),
+      body: trimmedBody.slice(0, 30_000),
+      createdAt: Date.now(),
+    });
+  },
+});
+
+export const deleteNote = mutation({
+  args: { id: v.id("notes") },
+  handler: async (ctx, { id }) => {
+    const userId = await requireUser(ctx);
+    const note = await ctx.db.get(id);
+    if (!note) return;
+    if (note.userId !== userId) throw new Error("Not your note");
+    await ctx.db.delete(id);
+  },
+});
+
+/* ------------------------- Study helper context ------------------------- */
+
+/** Everything the AI helper is allowed to know about the caller. */
+export const helperContext = query({
+  args: { noteId: v.optional(v.id("notes")) },
+  handler: async (ctx, { noteId }) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return null;
+
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const since = startOfDay.getTime();
+
+    const [sessions, timetable, reminders] = await Promise.all([
+      ctx.db
+        .query("focusSessions")
+        .withIndex("by_user_startedAt", (q) => q.eq("userId", userId))
+        .collect(),
+      ctx.db
+        .query("timetableEntries")
+        .withIndex("by_user_day", (q) => q.eq("userId", userId))
+        .collect(),
+      ctx.db
+        .query("reminders")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect(),
+    ]);
+
+    const note = noteId ? await ctx.db.get(noteId) : null;
+    const ownedNote = note && note.userId === userId ? note : null;
+    const today = sessions.filter((s) => s.startedAt >= since);
+
+    return {
+      today: new Date().toISOString().slice(0, 10),
+      xp: sessions.reduce((sum, s) => sum + s.minutes, 0),
+      focusMinutesToday: today.reduce((sum, s) => sum + s.minutes, 0),
+      sessionsToday: today.length,
+      subjectsStudiedToday: [
+        ...new Set(today.map((s) => s.subject).filter(Boolean)),
+      ],
+      timetable: timetable.map((e) => ({
+        day: e.day,
+        subject: e.subject,
+        note: e.note,
+        start: e.startTime,
+        end: e.endTime,
+      })),
+      openReminders: reminders
+        .filter((r) => !r.done)
+        .map((r) => r.title),
+      note: ownedNote
+        ? { title: ownedNote.title, body: ownedNote.body.slice(0, 12_000) }
+        : null,
+    };
   },
 });

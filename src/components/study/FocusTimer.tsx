@@ -80,56 +80,70 @@ export function FocusTimer({ subjects }: { subjects: string[] }) {
   const [running, setRunning] = useState(false);
   const [subject, setSubject] = useState("");
   const startedAtRef = useRef<number | null>(null);
+  const remainingRef = useRef(total);
   const logSession = useMutation(api.study.logFocusSession);
 
-  // Reset the clock when the preset changes.
-  useEffect(() => {
-    setRunning(false);
-    setRemaining(mode.minutes * 60);
-    startedAtRef.current = null;
-  }, [modeId, mode.minutes]);
+  const setClock = (value: number) => {
+    remainingRef.current = value;
+    setRemaining(value);
+  };
 
-  // Tick down while running.
+  /** Switch presets: stop, reset the clock to the new length. */
+  const selectMode = (next: Mode) => {
+    setModeId(next.id);
+    setRunning(false);
+    setClock(next.minutes * 60);
+    startedAtRef.current = null;
+  };
+
+  // Tick down while running; ring the bell at zero.
   useEffect(() => {
     if (!running) return;
-    const id = window.setInterval(() => setRemaining((r) => r - 1), 1000);
+    const id = window.setInterval(() => {
+      const next = remainingRef.current - 1;
+      if (next > 0) {
+        setClock(next);
+        return;
+      }
+      setClock(0);
+      setRunning(false);
+      chime();
+      const plannedStart =
+        startedAtRef.current ?? Date.now() - mode.minutes * 60_000;
+      startedAtRef.current = null;
+      if (mode.kind === "focus") {
+        void logSession({
+          subject: subject.trim() || undefined,
+          minutes: mode.minutes,
+          mode: mode.id,
+          startedAt: plannedStart,
+        });
+        toast.success(`${mode.minutes} minutes in the book`, {
+          description: subject.trim()
+            ? `${subject.trim()} — done. Switch subjects, or rest.`
+            : "Done. Switch subjects, or rest.",
+        });
+      } else {
+        toast("Break's over", {
+          description: "Back to the desk — pick the next subject.",
+        });
+      }
+    }, 1000);
     return () => window.clearInterval(id);
-  }, [running]);
-
-  // The bell.
-  useEffect(() => {
-    if (!running || remaining > 0) return;
-    setRunning(false);
-    chime();
-    const plannedStart =
-      startedAtRef.current ?? Date.now() - mode.minutes * 60_000;
-    startedAtRef.current = null;
-
-    if (mode.kind === "focus") {
-      void logSession({
-        subject: subject.trim() || undefined,
-        minutes: mode.minutes,
-        mode: mode.id,
-        startedAt: plannedStart,
-      });
-      toast.success(`${mode.minutes} minutes in the book`, {
-        description: subject.trim()
-          ? `${subject.trim()} — done. Switch subjects, or rest.`
-          : "Done. Switch subjects, or rest.",
-      });
-    } else {
-      toast("Break's over", {
-        description: "Back to the desk — pick the next subject.",
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [remaining, running]);
+  }, [running, mode, subject, logSession]);
 
   const progress = remaining / total;
   const mm = Math.floor(Math.max(remaining, 0) / 60);
   const ss = Math.max(remaining, 0) % 60;
 
   const toggle = () => {
+    if (remaining <= 0) {
+      // Finished — begin a fresh session.
+      startedAtRef.current = Date.now();
+      setClock(total);
+      setRunning(true);
+      return;
+    }
     if (!running && remaining === total) {
       startedAtRef.current = Date.now();
     }
@@ -138,7 +152,7 @@ export function FocusTimer({ subjects }: { subjects: string[] }) {
 
   const reset = () => {
     setRunning(false);
-    setRemaining(total);
+    setClock(total);
     startedAtRef.current = null;
   };
 
@@ -162,7 +176,7 @@ export function FocusTimer({ subjects }: { subjects: string[] }) {
           <button
             key={m.id}
             type="button"
-            onClick={() => setModeId(m.id)}
+            onClick={() => selectMode(m)}
             className={`font-archive rounded-sm border px-3 py-2 text-[10px] transition-colors ${
               m.id === modeId
                 ? "border-primary bg-primary text-primary-foreground"

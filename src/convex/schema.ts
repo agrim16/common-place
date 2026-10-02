@@ -60,7 +60,16 @@ const schema = defineSchema(
       minutes: v.number(),
       mode: v.string(), // "focus" | "revision" | "break"
       startedAt: v.number(),
-    }).index("by_user_startedAt", ["userId", "startedAt"]),
+    }).index("by_user_startedAt", ["userId", "startedAt"])
+      .index("by_startedAt", ["startedAt"]),
+
+    // Study desk: the student's library of uploaded notes
+    notes: defineTable({
+      userId: v.id("users"),
+      title: v.string(),
+      body: v.string(),
+      createdAt: v.number(),
+    }).index("by_user", ["userId"]),
   },
   {
     schemaValidation: false,

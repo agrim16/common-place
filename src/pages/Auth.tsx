@@ -109,6 +109,23 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      // Redirects the browser to Google on success.
+      await signIn("google", { redirectTo: redirect });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      setError(
+        message.includes("not configured")
+          ? "Google sign-in isn't set up yet — add the AUTH_GOOGLE_ID and AUTH_GOOGLE_SECRET keys, or use email instead."
+          : "Google sign-in failed. Please try again or use email.",
+      );
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col">
 
@@ -178,7 +195,20 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                         </span>
                       </div>
                     </div>
-                    
+
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full mt-4 gap-2"
+                      onClick={() => void handleGoogleSignIn()}
+                      disabled={isLoading}
+                    >
+                      <span className="font-display text-sm font-semibold">
+                        G
+                      </span>
+                      Continue with Google
+                    </Button>
+
                     <Button
                       type="button"
                       variant="outline"

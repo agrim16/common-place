@@ -127,7 +127,10 @@ createRoot(document.getElementById("root")!).render(
               <Route
                 path="/dashboard"
                 element={
-                  <RequireAuth>
+                  <RequireAuth
+                    title="Your desk is in the drawer"
+                    description="Sign in to open today's page — your timetable, timer, reminders and study helper are waiting."
+                  >
                     <Dashboard />
                   </RequireAuth>
                 }
