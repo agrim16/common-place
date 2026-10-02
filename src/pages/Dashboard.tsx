@@ -8,6 +8,13 @@ import { StudyHelperPanel, type HelperAttachment } from "@/components/study/Stud
 import { TimetablePanel } from "@/components/study/TimetablePanel";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
@@ -28,6 +35,7 @@ import {
   Bell,
   CalendarDays,
   LogOut,
+  MoreHorizontal,
   NotebookPen,
   ScrollText,
   Sparkles,
@@ -44,14 +52,23 @@ const NO_PERIODS: TimetableEntry[] = [];
 const NO_REMINDERS: Reminder[] = [];
 
 const TABS = [
-  { id: "desk", label: "Desk", icon: AlarmClock },
-  { id: "timetable", label: "Timetable", icon: CalendarDays },
-  { id: "reminders", label: "Reminders", icon: Bell },
-  { id: "notes", label: "Notes", icon: NotebookPen },
-  { id: "quiz", label: "Quiz", icon: ScrollText },
-  { id: "buddy", label: "Helper", icon: Sparkles },
-  { id: "marks", label: "Marks", icon: Trophy },
+  { id: "desk", label: "Desk", icon: AlarmClock, blurb: "Focus timer and today's totals" },
+  { id: "timetable", label: "Timetable", icon: CalendarDays, blurb: "The week's periods" },
+  { id: "reminders", label: "Reminders", icon: Bell, blurb: "Assignments and revision bells" },
+  { id: "notes", label: "Notes", icon: NotebookPen, blurb: "Written notes, photos and PDFs" },
+  { id: "quiz", label: "Quiz", icon: ScrollText, blurb: "A fresh paper on any topic" },
+  { id: "buddy", label: "Helper", icon: Sparkles, blurb: "Ask about your progress" },
+  { id: "marks", label: "Marks", icon: Trophy, blurb: "XP, levels and the scoreboard" },
 ] as const;
+
+/** Four fit comfortably on a phone; the rest live behind More. */
+const PRIMARY_IDS = ["desk", "timetable", "reminders", "notes"] as const;
+const PRIMARY_TABS = TABS.filter((t) =>
+  (PRIMARY_IDS as readonly string[]).includes(t.id),
+);
+const MORE_TABS = TABS.filter(
+  (t) => !(PRIMARY_IDS as readonly string[]).includes(t.id),
+);
 
 type TabId = (typeof TABS)[number]["id"];
 
@@ -65,6 +82,7 @@ export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [moreOpen, setMoreOpen] = useState(false);
 
   /* Deep links: /dashboard?tab=notes, and ?tab=helper&note=<id> from the library.
      The URL is the single source of truth for which panel is open. */
@@ -162,10 +180,12 @@ export default function Dashboard() {
 
   const selectTab = (next: TabId) => {
     setSearchParams(next === "desk" ? {} : { tab: next }, { replace: true });
+    setMoreOpen(false);
     window.scrollTo({ top: 0 });
   };
 
   const firstName = user?.name?.split(" ")[0];
+  const moreActive = MORE_TABS.some((t) => t.id === tab);
   const dateLine = `${WEEKDAYS[todayIdx]}, ${today.getDate()} ${
     MONTHS[today.getMonth()]
   } ${today.getFullYear()}`;
@@ -340,13 +360,13 @@ export default function Dashboard() {
         </footer>
       </div>
 
-      {/* Bottom tab bar — filed-folder tabs */}
+      {/* Bottom tab bar — filed-folder tabs, with the rest behind More */}
       <nav
         aria-label="Study desk sections"
         className="fixed inset-x-0 bottom-0 z-40 border-t-4 border-double border-border bg-background/95 backdrop-blur"
       >
         <div className="mx-auto flex w-full max-w-lg items-end justify-between gap-1 px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-          {TABS.map(({ id, label, icon: Icon }) => {
+          {PRIMARY_TABS.map(({ id, label, icon: Icon }) => {
             const active = tab === id;
             return (
               <button
@@ -356,6 +376,7 @@ export default function Dashboard() {
                 aria-current={active ? "page" : undefined}
                 className={cn(
                   "relative flex flex-1 flex-col items-center gap-1 rounded-t-md border px-1 pb-2 pt-2.5 transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                   active
                     ? "border-border border-b-0 bg-card text-primary shadow-[0_-6px_12px_-10px_rgba(58,38,18,0.8)]"
                     : "border-transparent text-muted-foreground hover:text-foreground",
@@ -368,8 +389,91 @@ export default function Dashboard() {
               </button>
             );
           })}
+
+          <button
+            type="button"
+            onClick={() => setMoreOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={moreOpen}
+            aria-current={moreActive ? "page" : undefined}
+            className={cn(
+              "relative flex flex-1 flex-col items-center gap-1 rounded-t-md border px-1 pb-2 pt-2.5 transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+              moreActive
+                ? "border-border border-b-0 bg-card text-primary shadow-[0_-6px_12px_-10px_rgba(58,38,18,0.8)]"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <MoreHorizontal className="size-5" />
+            <span className="font-archive text-[8px] tracking-[0.06em]">
+              More
+            </span>
+          </button>
         </div>
       </nav>
+
+      {/* More sheet — the sections that don't fit the bar */}
+      <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
+        <SheetContent
+          side="bottom"
+          className="paper rounded-t-md border-border pb-[max(1rem,env(safe-area-inset-bottom))]"
+        >
+          <SheetHeader>
+            <SheetTitle className="font-display text-xl font-semibold">
+              More of the desk
+            </SheetTitle>
+            <SheetDescription>
+              Everything else in your study almanac.
+            </SheetDescription>
+          </SheetHeader>
+
+          <ul className="mt-4 grid gap-2">
+            {MORE_TABS.map(({ id, label, icon: Icon, blurb }) => {
+              const active = tab === id;
+              return (
+                <li key={id}>
+                  <button
+                    type="button"
+                    onClick={() => selectTab(id)}
+                    aria-current={active ? "page" : undefined}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-sm border px-4 py-3.5 text-left transition-colors",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+                      active
+                        ? "border-primary bg-primary/8"
+                        : "border-border hover:border-primary hover:bg-secondary/60",
+                    )}
+                  >
+                    <Icon
+                      className={cn(
+                        "size-5 shrink-0",
+                        active ? "text-primary" : "text-muted-foreground",
+                      )}
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-[17px] font-medium">
+                        {label}
+                      </span>
+                      <span className="font-archive block text-[9px] text-muted-foreground">
+                        {blurb}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+
+          <Button
+            type="button"
+            variant="outline"
+            className="mt-4 w-full gap-1.5 rounded-sm"
+            onClick={handleSignOut}
+          >
+            <LogOut className="size-4" /> Sign out
+          </Button>
+        </SheetContent>
+      </Sheet>
     </main>
   );
 }
