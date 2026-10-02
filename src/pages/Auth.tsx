@@ -293,7 +293,9 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
       </div>
     </div>
   );
-}function AuthShell({ redirectAfterAuth }: AuthProps = {}) {
+}
+
+function AuthShell({ redirectAfterAuth }: AuthProps = {}) {
   return (
     <div className="min-h-screen flex flex-col">
       {/* Auth Content */}
