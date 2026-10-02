@@ -132,6 +132,7 @@ async function generateText(
 ): Promise<{ text: string; model: string }> {
   const candidates = [...preferred];
   let busyRetries = 0;
+  let rateLimits = 0;
 
   for (let pass = 0; pass < 3; pass++) {
     if (pass === 1) {
@@ -156,8 +157,21 @@ async function generateText(
       }
       if (attempt.kind === "error") {
         if (attempt.status === 429) {
+          // Quota is per model, so a throttled pro model says nothing about
+          // flash. Back off briefly, then fall through to the next candidate
+          // rather than failing the whole request on the first 429.
+          rateLimits += 1;
+          console.log(
+            `[gemini] rate limited on ${model} (${rateLimits}) — trying the next model`,
+          );
+          if (rateLimits <= 3) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, 1200 * rateLimits),
+            );
+            continue;
+          }
           throw new Error(
-            "The helper is rate-limited right now — wait a moment and try again.",
+            "Gemini is rate-limiting every model right now — wait a moment and try again.",
           );
         }
         throw new Error(
