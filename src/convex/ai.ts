@@ -101,6 +101,68 @@ async function discoverModel(apiKey: string): Promise<string | null> {
 }
 
 /**
+ * Run a payload through the candidate models: preferred models first, model
+ * discovery appended on the second pass, 503s retried. Shared by the study
+ * helper and the quiz generator.
+ */
+async function generateText(
+  apiKey: string,
+  payload: unknown,
+): Promise<{ text: string; model: string }> {
+  const candidates = [...CANDIDATE_MODELS];
+  let busyRetries = 0;
+
+  for (let pass = 0; pass < 3; pass++) {
+    if (pass === 1) {
+      const discovered = await discoverModel(apiKey);
+      if (discovered && !candidates.includes(discovered)) {
+        candidates.push(discovered);
+      }
+    }
+
+    for (const model of candidates) {
+      const attempt = await tryGenerate(model, apiKey, payload);
+      if (attempt.kind === "ok") {
+        return { text: attempt.answer, model };
+      }
+      if (attempt.kind === "busy") {
+        busyRetries += 1;
+        if (busyRetries <= 3) {
+          await new Promise((resolve) => setTimeout(resolve, 700));
+          continue;
+        }
+        continue;
+      }
+      if (attempt.kind === "error") {
+        if (attempt.status === 429) {
+          throw new Error(
+            "The helper is rate-limited right now — wait a moment and try again.",
+          );
+        }
+        throw new Error(
+          `The study helper could not answer (HTTP ${attempt.status}).`,
+        );
+      }
+      // missing → next model
+    }
+  }
+
+  throw new Error(
+    "No usable Gemini model was found for this API key — see server logs for the per-model HTTP statuses.",
+  );
+}
+
+async function requireApiKey(): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "The Gemini API key isn't set yet — add GEMINI_API_KEY to the project's API keys, then try again.",
+    );
+  }
+  return apiKey;
+}
+
+/**
  * The study helper: a Gemini-backed tutor that can see the student's day —
  * today's focus minutes, timetable, open reminders and optionally an uploaded
  * note — so answers about progress and "what should I study next" are grounded.
@@ -123,12 +185,7 @@ export const askStudyHelper = action({
     const question = args.question.trim();
     if (!question) throw new Error("Ask a question first.");
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error(
-        "The Gemini API key isn't set yet — add GEMINI_API_KEY to the project's API keys, then try again.",
-      );
-    }
+    const apiKey = await requireApiKey();
 
     const context = await ctx.runQuery(api.study.helperContext, {
       noteId: args.noteId,
@@ -158,47 +215,125 @@ export const askStudyHelper = action({
       generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
     };
 
-    const candidates = [...CANDIDATE_MODELS];
-    let busyRetries = 0;
+    const { text, model } = await generateText(apiKey, payload);
+    return { answer: text, model };
+  },
+});
 
-    // Two passes: preferred models first, discovery appended, 503s retried once.
-    for (let pass = 0; pass < 3; pass++) {
-      if (pass === 1) {
-        const discovered = await discoverModel(apiKey);
-        if (discovered && !candidates.includes(discovered)) {
-          candidates.push(discovered);
-        }
-      }
+/* ------------------------------- Quizzes ------------------------------- */
 
-      for (const model of candidates) {
-        const attempt = await tryGenerate(model, apiKey, payload);
-        if (attempt.kind === "ok") {
-          return { answer: attempt.answer, model };
-        }
-        if (attempt.kind === "busy") {
-          busyRetries += 1;
-          if (busyRetries <= 3) {
-            await new Promise((resolve) => setTimeout(resolve, 700));
-            continue;
-          }
-          continue;
-        }
-        if (attempt.kind === "error") {
-          if (attempt.status === 429) {
-            throw new Error(
-              "The helper is rate-limited right now — wait a moment and try again.",
-            );
-          }
-          throw new Error(
-            `The study helper could not answer (HTTP ${attempt.status}).`,
-          );
-        }
-        // missing → next model
-      }
+export type QuizQuestion = {
+  prompt: string;
+  options: string[];
+  answerIndex: number;
+  explanation: string;
+};
+
+/** Pull the first JSON object out of a model answer, fences and all. */
+function extractJson(text: string): Record<string, unknown> {
+  const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end <= start) {
+    throw new Error("The quiz came back unreadable — try the topic again.");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    throw new Error("The quiz came back unreadable — try the topic again.");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("The quiz came back unreadable — try the topic again.");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** Keep only well-formed questions so the UI never has to defend itself. */
+function normaliseQuestions(raw: unknown, wanted: number): QuizQuestion[] {
+  const list = Array.isArray(raw) ? raw : [];
+  const questions: QuizQuestion[] = [];
+  for (const entry of list) {
+    if (questions.length >= wanted) break;
+    if (typeof entry !== "object" || entry === null) continue;
+    const item = entry as Record<string, unknown>;
+    const prompt =
+      asString(item.question) || asString(item.prompt) || asString(item.title);
+    if (!prompt) continue;
+    const options = Array.isArray(item.options)
+      ? item.options.map(asString).filter(Boolean)
+      : [];
+    const answerIndex = Math.trunc(Number(item.answerIndex ?? item.answer));
+    if (options.length < 2 || !Number.isInteger(answerIndex)) continue;
+    if (answerIndex < 0 || answerIndex >= options.length) continue;
+    questions.push({
+      prompt: prompt.slice(0, 400),
+      options: options.slice(0, 6).map((option) => option.slice(0, 160)),
+      answerIndex,
+      explanation: asString(item.explanation).slice(0, 600),
+    });
+  }
+  return questions;
+}
+
+/**
+ * Build a multiple-choice quiz on any topic with Gemini. When the student picks
+ * a note, the quiz is written from that note's own material.
+ */
+export const generateQuiz = action({
+  args: {
+    topic: v.string(),
+    count: v.optional(v.number()),
+    noteId: v.optional(v.id("notes")),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to take a quiz.");
+
+    const topic = args.topic.trim();
+    if (!topic) throw new Error("Name a topic first — e.g. “Photosynthesis”.");
+
+    const count = Math.min(Math.max(Math.trunc(args.count ?? 5), 3), 10);
+    const apiKey = await requireApiKey();
+
+    const note = args.noteId ? await ctx.runQuery(api.study.quizSource, {
+      noteId: args.noteId,
+    }) : null;
+
+    const source = note
+      ? `Write the quiz from the student's own note, titled “${note.title}”:\n"""\n${note.body.slice(0, 8000)}\n"""`
+      : "Write the quiz from your own knowledge of the topic.";
+
+    const prompt = [
+      `Set a ${count}-question multiple-choice quiz on: ${topic.slice(0, 200)}.`,
+      source,
+      "Rules:",
+      "- Every question must have exactly 4 short options, labelled A to D by position.",
+      "- Exactly one option is correct; distractors must be plausible and clearly wrong.",
+      "- Vary the difficulty: easy, medium, then harder.",
+      "- Add a one or two sentence explanation for the correct answer.",
+      "",
+      'Reply with JSON only, in this shape: {"questions":[{"question":"...","options":["...","...","...","..."],"answerIndex":0,"explanation":"..."}]}',
+      `Return exactly ${count} questions and no other keys.`,
+    ].join("\n");
+
+    const payload = {
+      contents: [{ role: "user" as const, parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.6, maxOutputTokens: 2048 },
+    };
+
+    const { text, model } = await generateText(apiKey, payload);
+    const questions = normaliseQuestions(extractJson(text).questions, count);
+    if (questions.length < 2) {
+      throw new Error(
+        "The quiz came back too thin to use — try naming a narrower topic.",
+      );
     }
 
-    throw new Error(
-      "No usable Gemini model was found for this API key — see server logs for the per-model HTTP statuses.",
-    );
+    return { topic, model, questions };
   },
 });

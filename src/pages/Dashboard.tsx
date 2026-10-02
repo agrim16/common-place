@@ -1,6 +1,7 @@
 import { FlipClock } from "@/components/study/FlipClock";
 import { FocusTimer } from "@/components/study/FocusTimer";
 import { ProgressPanel } from "@/components/study/ProgressPanel";
+import { QuizPanel } from "@/components/study/QuizPanel";
 import { RemindersPanel } from "@/components/study/RemindersPanel";
 import { StudyHelperPanel } from "@/components/study/StudyHelperPanel";
 import { TimetablePanel } from "@/components/study/TimetablePanel";
@@ -26,6 +27,7 @@ import {
   Bell,
   CalendarDays,
   LogOut,
+  ScrollText,
   Sparkles,
   Trophy,
 } from "lucide-react";
@@ -43,6 +45,7 @@ const TABS = [
   { id: "desk", label: "Desk", icon: AlarmClock },
   { id: "timetable", label: "Timetable", icon: CalendarDays },
   { id: "reminders", label: "Reminders", icon: Bell },
+  { id: "quiz", label: "Quiz", icon: ScrollText },
   { id: "buddy", label: "Helper", icon: Sparkles },
   { id: "marks", label: "Marks", icon: Trophy },
 ] as const;
@@ -286,6 +289,11 @@ export default function Dashboard() {
                 <RemindersPanel reminders={reminders} now={now} />
               </div>
             )}
+            {tab === "quiz" && (
+              <div className="pt-6">
+                <QuizPanel />
+              </div>
+            )}
             {tab === "buddy" && (
               <div className="pt-6">
                 <StudyHelperPanel />
@@ -301,8 +309,8 @@ export default function Dashboard() {
 
         <footer className="mt-10 border-t border-border pt-5 text-center">
           <p className="font-archive text-[9px] leading-5 text-muted-foreground">
-            Commonplace · Study Buddy — timetable, focus timer, reminders, XP
-            &amp; scoreboard, notes library, study helper.
+            Commonplace · Study Buddy — timetable, focus timer, reminders, AI
+            quizzes, XP &amp; scoreboard, notes library, study helper.
           </p>
         </footer>
       </div>

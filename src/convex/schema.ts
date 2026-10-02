@@ -63,6 +63,17 @@ const schema = defineSchema(
     }).index("by_user_startedAt", ["userId", "startedAt"])
       .index("by_startedAt", ["startedAt"]),
 
+    // Study desk: AI quiz attempts, kept for the student's own record
+    quizAttempts: defineTable({
+      userId: v.id("users"),
+      topic: v.string(),
+      total: v.number(),
+      correct: v.number(),
+      createdAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_createdAt", ["userId", "createdAt"]),
+
     // Study desk: the student's library of uploaded notes
     notes: defineTable({
       userId: v.id("users"),

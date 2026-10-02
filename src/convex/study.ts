@@ -95,15 +95,15 @@ export const addReminder = mutation({
     title: v.string(),
     time: v.number(),
   },
-  handler: async (ctx, { title, time }) => {
+  handler: async (ctx, args) => {
     const userId = await requireUser(ctx);
-    const trimmed = title.trim();
+    const trimmed = args.title.trim();
     if (!trimmed) throw new Error("Give the reminder a title");
-    if (!Number.isFinite(time)) throw new Error("Invalid reminder time");
+    if (!Number.isFinite(args.time)) throw new Error("Invalid reminder time");
     await ctx.db.insert("reminders", {
       userId,
       title: trimmed.slice(0, 140),
-      time,
+      time: args.time,
       done: false,
       createdAt: Date.now(),
     });
@@ -232,6 +232,55 @@ export const scoreboard = query({
   },
 });
 
+/* ------------------------------- Quizzes ------------------------------- */
+
+/** One of the caller's notes, used as the source material for a quiz. */
+export const quizSource = query({
+  args: { noteId: v.id("notes") },
+  handler: async (ctx, { noteId }) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to take a quiz.");
+    const note = await ctx.db.get(noteId);
+    if (!note || note.userId !== userId) {
+      throw new Error("That note isn't yours.");
+    }
+    return { title: note.title, body: note.body };
+  },
+});
+
+export const recordQuizAttempt = mutation({
+  args: {
+    topic: v.string(),
+    total: v.number(),
+    correct: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUser(ctx);
+    const topic = args.topic.trim();
+    if (!topic) throw new Error("A quiz needs a topic.");
+    await ctx.db.insert("quizAttempts", {
+      userId,
+      topic: topic.slice(0, 120),
+      total: Math.max(1, Math.round(args.total)),
+      correct: Math.max(0, Math.round(args.correct)),
+      createdAt: Date.now(),
+    });
+  },
+});
+
+export const listQuizAttempts = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const attempts = await ctx.db
+      .query("quizAttempts")
+      .withIndex("by_user_createdAt", (q) => q.eq("userId", userId))
+      .collect();
+    return attempts.sort((a, b) => b.createdAt - a.createdAt).slice(0, 8);
+  },
+});
+
 /* --------------------------- Notes library --------------------------- */
 
 export const listNotes = query({
@@ -249,10 +298,10 @@ export const listNotes = query({
 
 export const createNote = mutation({
   args: { title: v.string(), body: v.string() },
-  handler: async (ctx, { title, body }) => {
+  handler: async (ctx, args) => {
     const userId = await requireUser(ctx);
-    const trimmedTitle = title.trim();
-    const trimmedBody = body.trim();
+    const trimmedTitle = args.title.trim();
+    const trimmedBody = args.body.trim();
     if (!trimmedTitle) throw new Error("Give the note a title");
     if (!trimmedBody) throw new Error("The note is empty");
     await ctx.db.insert("notes", {
@@ -288,7 +337,7 @@ export const helperContext = query({
     startOfDay.setHours(0, 0, 0, 0);
     const since = startOfDay.getTime();
 
-    const [sessions, timetable, reminders] = await Promise.all([
+    const [sessions, timetable, reminders, quizzes] = await Promise.all([
       ctx.db
         .query("focusSessions")
         .withIndex("by_user_startedAt", (q) => q.eq("userId", userId))
@@ -299,6 +348,10 @@ export const helperContext = query({
         .collect(),
       ctx.db
         .query("reminders")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect(),
+      ctx.db
+        .query("quizAttempts")
         .withIndex("by_user", (q) => q.eq("userId", userId))
         .collect(),
     ]);
@@ -325,6 +378,12 @@ export const helperContext = query({
       openReminders: reminders
         .filter((r) => !r.done)
         .map((r) => r.title),
+      quizzes: {
+        taken: quizzes.length,
+        questions: quizzes.reduce((sum, q) => sum + q.total, 0),
+        correct: quizzes.reduce((sum, q) => sum + q.correct, 0),
+        recentTopics: [...new Set(quizzes.map((q) => q.topic))].slice(0, 5),
+      },
       note: ownedNote
         ? { title: ownedNote.title, body: ownedNote.body.slice(0, 12_000) }
         : null,
