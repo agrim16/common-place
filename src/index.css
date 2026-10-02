@@ -1,0 +1,232 @@
+/* DO NOT CHANGE */
+@import "tailwindcss";
+@import "tw-animate-css";
+@custom-variant dark (&:is(.dark *));
+
+/* DO NOT CHANGE */
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/* VINTAGE THEME — muted sepia & aged paper */
+:root {
+  --radius: 0.5rem;
+  --background: #f0e6d2;
+  --foreground: #2b2318;
+  --card: #faf4e6;
+  --card-foreground: #2b2318;
+  --popover: #faf4e6;
+  --popover-foreground: #2b2318;
+  --primary: #7a3527;
+  --primary-foreground: #f8f1e0;
+  --secondary: #e7dabf;
+  --secondary-foreground: #35291b;
+  --muted: #e9ddc4;
+  --muted-foreground: #7c6a51;
+  --accent: #e2d3b3;
+  --accent-foreground: #3a2d1e;
+  --destructive: #a03325;
+  --border: #d8c7a5;
+  --input: #cfbc97;
+  --ring: #8c6b46;
+  --chart-1: #7a3527;
+  --chart-2: #5f6b48;
+  --chart-3: #8a6d3b;
+  --chart-4: #4a5a6b;
+  --chart-5: #a3854f;
+  --sidebar: #efe5d0;
+  --sidebar-foreground: #2b2318;
+  --sidebar-primary: #7a3527;
+  --sidebar-primary-foreground: #f8f1e0;
+  --sidebar-accent: #e7dabf;
+  --sidebar-accent-foreground: #35291b;
+  --sidebar-border: #d8c7a5;
+  --sidebar-ring: #8c6b46;
+}
+
+/* Lamplit night desk — same sepia family, darkened */
+.dark {
+  --background: #1c1712;
+  --foreground: #ede2cc;
+  --card: #251e16;
+  --card-foreground: #ede2cc;
+  --popover: #251e16;
+  --popover-foreground: #ede2cc;
+  --primary: #c4785e;
+  --primary-foreground: #20180f;
+  --secondary: #2f271d;
+  --secondary-foreground: #ede2cc;
+  --muted: #2c251b;
+  --muted-foreground: #a8977c;
+  --accent: #332a1f;
+  --accent-foreground: #ede2cc;
+  --border: #3b3226;
+  --input: #453a2c;
+  --ring: #9a7b55;
+  --destructive: #d16a55;
+  --chart-1: #c4785e;
+  --chart-2: #9aa476;
+  --chart-3: #c8a05f;
+  --chart-4: #7f97ad;
+  --chart-5: #d0b177;
+  --sidebar: #1f1a14;
+  --sidebar-foreground: #ede2cc;
+  --sidebar-primary: #c4785e;
+  --sidebar-primary-foreground: #20180f;
+  --sidebar-accent: #2f271d;
+  --sidebar-accent-foreground: #ede2cc;
+  --sidebar-border: #3b3226;
+  --sidebar-ring: #9a7b55;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: "EB Garamond", ui-serif, Georgia, serif;
+    /* aged-paper grain + faint warm foxing */
+    background-image:
+      radial-gradient(
+        ellipse at 15% -5%,
+        rgba(122, 84, 47, 0.12),
+        transparent 55%
+      ),
+      radial-gradient(
+        ellipse at 95% 8%,
+        rgba(140, 105, 60, 0.1),
+        transparent 45%
+      ),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: "Fraunces", ui-serif, Georgia, serif;
+    font-variation-settings: "opsz" 72;
+    letter-spacing: -0.01em;
+  }
+  ::selection {
+    background: rgba(122, 53, 39, 0.22);
+  }
+  button:not([disabled]),
+  [role="button"]:not([disabled]) {
+    cursor: pointer;
+  }
+}
+
+/* ---------- Archival details ---------- */
+
+/* Typewriter labels: stamps, folios, metadata */
+.font-archive {
+  font-family: "Courier Prime", ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+/* A fresh sheet laid on the desk */
+.paper {
+  background-color: var(--card);
+  border: 1px solid var(--border);
+  box-shadow:
+    0 1px 0 rgba(255, 253, 245, 0.7) inset,
+    0 18px 32px -26px rgba(58, 38, 18, 0.75);
+}
+
+/* Notebook page: faint blue rules with a red margin line */
+.ruled {
+  position: relative;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(2rem - 1px),
+    rgba(74, 96, 132, 0.18) calc(2rem - 1px),
+    rgba(74, 96, 132, 0.18) 2rem
+  );
+}
+.ruled::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 1.5rem;
+  width: 1px;
+  background: rgba(159, 74, 56, 0.35);
+  pointer-events: none;
+}
+
+/* Ink-stamped archival label */
+.stamp {
+  font-family: "Courier Prime", ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--primary);
+  border: 1.5px double currentColor;
+  padding: 0.25rem 0.6rem;
+  opacity: 0.85;
+}
+
+/* Ornamental divider — hairline, diamond, hairline */
+.ornament {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--muted-foreground);
+}
+.ornament::before,
+.ornament::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--border) 85%, transparent),
+    transparent
+  );
+}
+
+/* Soft vignette on hero imagery / specimen cards */
+.vignette {
+  box-shadow:
+    0 1px 0 rgba(255, 253, 245, 0.65) inset,
+    0 0 0 1px var(--border),
+    0 0 0 6px rgba(250, 244, 230, 0.5),
+    0 28px 50px -34px rgba(58, 38, 18, 0.9);
+}
