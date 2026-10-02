@@ -7,8 +7,8 @@ import {
   MAX_PDF_BYTES,
   formatBytes,
   prepareNoteImage,
-  readPdfAsChunks,
 } from "@/lib/study";
+import { usePdfUpload } from "@/hooks/use-pdf-upload";
 import type { Id } from "@/convex/_generated/dataModel";
 import { useAction, useMutation, useQuery } from "convex/react";
 import {
@@ -73,8 +73,7 @@ export function QuizPanel() {
   const photos = useQuery(api.study.listNoteImages);
   const createNoteImage = useMutation(api.study.createNoteImage);
   const files = useQuery(api.study.listNoteFiles);
-  const createNoteFile = useMutation(api.study.createNoteFile);
-  const putFileChunk = useMutation(api.study.putNoteFileChunk);
+  const { upload: uploadPdf } = usePdfUpload();
   const summarise = useAction(api.ai.summarizePhoto);
   const attempts = useQuery(api.study.listQuizAttempts) ?? NO_ATTEMPTS;
   const generate = useAction(api.ai.generateQuiz);
@@ -140,16 +139,7 @@ export function QuizPanel() {
     if (!file) return;
     setBusy(true);
     try {
-      const { chunks, bytes } = await readPdfAsChunks(file);
-      const id = await createNoteFile({
-        title: file.name.replace(/\.[^.]+$/, "") || "Worksheet",
-        mimeType: "application/pdf",
-        bytes,
-        chunkCount: chunks.length,
-      });
-      for (const [index, data] of chunks.entries()) {
-        await putFileChunk({ fileId: id, index, data });
-      }
+      const id = await uploadPdf(file);
       setFileId(id);
       toast.success(`${file.name} attached — the quiz will use it.`);
     } catch (error) {

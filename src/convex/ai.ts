@@ -8,6 +8,12 @@ import { action, type ActionCtx } from "./_generated/server";
 
 const MAX_HISTORY = 8;
 
+/**
+ * Gemini rejects inline requests over roughly 20 MB, and base64 inflates the
+ * bytes by 4:3 — so this is the largest PDF we will actually send.
+ */
+const MAX_INLINE_PDF_BYTES = 14 * 1024 * 1024;
+
 /** Tried in order; the first that succeeds wins. */
 const CANDIDATE_MODELS = [
   process.env.GEMINI_MODEL,
@@ -177,14 +183,25 @@ async function photoParts(ctx: ActionCtx, ids: Id<"noteImages">[] | undefined) {
 
 /** Turn attached PDFs into Gemini inline document parts. */
 async function fileParts(ctx: ActionCtx, ids: Id<"noteFiles">[] | undefined) {
-  if (!ids?.length) return { parts: [], labels: [] };
-  const files = await ctx.runQuery(api.study.noteFileData, { ids });
-  return {
-    parts: files.map((file) => ({
-      inlineData: { mimeType: file.mimeType, data: file.data },
-    })),
-    labels: files.map((file) => `${file.title} (PDF)`),
-  };
+  if (!ids?.length) return { parts: [], labels: [], tooBig: [] as string[] };
+  const files = await ctx.runQuery(api.study.noteFileSource, { ids });
+  const parts: Array<{ inlineData: { mimeType: string; data: string } }> = [];
+  const labels: string[] = [];
+  const tooBig: string[] = [];
+
+  for (const file of files) {
+    if (file.bytes > MAX_INLINE_PDF_BYTES) {
+      tooBig.push(file.title);
+      continue;
+    }
+    const blob = await ctx.storage.get(file.storageId);
+    if (!blob) continue;
+    const data = Buffer.from(await blob.arrayBuffer()).toString("base64");
+    parts.push({ inlineData: { mimeType: file.mimeType, data } });
+    labels.push(`${file.title} (PDF)`);
+  }
+
+  return { parts, labels, tooBig };
 }
 
 /**
@@ -396,11 +413,16 @@ export const summarizeFile = action({
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to use your notes.");
 
-    const files = await ctx.runQuery(api.study.noteFileData, {
+    const files = await ctx.runQuery(api.study.noteFileSource, {
       ids: [args.fileId],
     });
     const file = files[0];
-    if (!file) throw new Error("That file isn't yours, or upload was cut short.");
+    if (!file) throw new Error("That file isn't yours.");
+    if (file.bytes > MAX_INLINE_PDF_BYTES) {
+      throw new Error(
+        "That PDF is too large for the AI to read at once — try an under-14 MB copy.",
+      );
+    }
 
     const apiKey = await requireApiKey();
     const attached = await fileParts(ctx, [args.fileId]);
@@ -480,6 +502,11 @@ export const generateQuiz = action({
       ...(photos.parts.length > 0
         ? [
             `Also use the attached photos of the student's handwritten notes (${photos.labels.join(", ")}) as source material — transcribe them before writing questions.`,
+          ]
+        : []),
+      ...(documents.tooBig.length > 0
+        ? [
+            `The student also attached these PDFs but they are too large to read: ${documents.tooBig.join(", ")} — do not pretend to have read them.`,
           ]
         : []),
       ...(documents.parts.length > 0

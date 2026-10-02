@@ -77,27 +77,18 @@ const schema = defineSchema(
     }).index("by_user", ["userId"]),
 
     // Study desk: PDFs (worksheets, handouts, past papers). The bytes live in
-    // noteFileChunks because a Convex document must stay under 1 MiB.
+    // Convex file storage, not in a document — documents must stay under 1 MiB.
     noteFiles: defineTable({
       userId: v.id("users"),
       title: v.string(),
       mimeType: v.string(), // "application/pdf"
-      chunkCount: v.number(),
+      storageId: v.string(), // Convex storage handle for the real bytes
       bytes: v.number(), // original file size in bytes
       summary: v.optional(v.string()),
       keyPoints: v.optional(v.array(v.string())),
       summarizedAt: v.optional(v.number()),
       createdAt: v.number(),
     }).index("by_user", ["userId"]),
-
-    noteFileChunks: defineTable({
-      userId: v.id("users"),
-      fileId: v.id("noteFiles"),
-      index: v.number(),
-      data: v.string(), // base64 slice, no data: prefix
-    })
-      .index("by_file", ["fileId"])
-      .index("by_user", ["userId"]),
 
     // Study desk: AI quiz attempts, kept for the student's own record
     quizAttempts: defineTable({

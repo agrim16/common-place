@@ -8,8 +8,8 @@ import {
   formatBytes,
   MAX_PDF_BYTES,
   prepareNoteImage,
-  readPdfAsChunks,
 } from "@/lib/study";
+import { usePdfUpload } from "@/hooks/use-pdf-upload";
 import { useAction, useMutation, useQuery } from "convex/react";
 import {
   BookOpen,
@@ -73,12 +73,13 @@ export function NotesPanel() {
   const createNoteImage = useMutation(api.study.createNoteImage);
   const deleteNoteImage = useMutation(api.study.deleteNoteImage);
   const renameNoteImage = useMutation(api.study.renameNoteImage);
-  const createNoteFile = useMutation(api.study.createNoteFile);
-  const putNoteFileChunk = useMutation(api.study.putNoteFileChunk);
+  const { upload: uploadPdf, progress: pdfProgress } = usePdfUpload();
   const deleteNoteFile = useMutation(api.study.deleteNoteFile);
   const renameNoteFile = useMutation(api.study.renameNoteFile);
   const summarisePhoto = useAction(api.ai.summarizePhoto);
   const summariseFile = useAction(api.ai.summarizeFile);
+
+  const liveStatus = pdfProgress || status;
 
   const askAbout = (kind: RenameKind, id: string) => {
     const param = kind === "note" ? "note" : kind === "photo" ? "photo" : "pdf";
@@ -184,19 +185,8 @@ export function NotesPanel() {
     setUploadingPdf(true);
     setStatus(`Filing ${file.name}…`);
     try {
-      const { chunks, bytes } = await readPdfAsChunks(file);
-      const id = await createNoteFile({
-        title: file.name.replace(/\.[^.]+$/, "") || "Worksheet",
-        mimeType: "application/pdf",
-        bytes,
-        chunkCount: chunks.length,
-      });
-      for (const [index, data] of chunks.entries()) {
-        setStatus(
-          `Filing ${file.name} — part ${index + 1} of ${chunks.length}…`,
-        );
-        await putNoteFileChunk({ fileId: id, index, data });
-      }
+      const id = await uploadPdf(file);
+      setStatus(`${file.name} filed. Reading the document…`);
       setStatus(`${file.name} filed. Reading the document…`);
       toast.success(`${file.name} filed — reading it now…`);
       setBusyFile(id);
@@ -287,7 +277,7 @@ export function NotesPanel() {
 
       {/* Announcements for uploads, summaries and renames. */}
       <p role="status" aria-live="polite" className="sr-only">
-        {status}
+        {liveStatus}
       </p>
 
       {/* ---------------------------- Written notes ---------------------------- */}
