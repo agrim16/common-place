@@ -445,7 +445,12 @@ export const noteImageData = query({
 /* ------------------------------ PDF files ------------------------------ */
 
 const PDF_MIME = "application/pdf";
-const MAX_PDF_BYTES = 25 * 1024 * 1024; // Convex storage allows 32 MiB per file
+/**
+ * Storage itself has no per-file cap; the real ceiling is Convex's 2-minute
+ * upload POST timeout, which a browser cannot outlive. Keep this in step with
+ * MAX_PDF_BYTES in src/lib/study.ts, which guards the client.
+ */
+const MAX_PDF_BYTES = 100 * 1024 * 1024;
 
 /** PDF library — metadata only, never the bytes. */
 export const listNoteFiles = query({
@@ -513,7 +518,7 @@ export const createNoteFile = mutation({
     if (!title) throw new Error("Give the file a title");
     if (args.mimeType !== PDF_MIME) throw new Error("Only PDFs can be filed.");
     if (args.bytes > MAX_PDF_BYTES) {
-      throw new Error("That PDF is over the 25 MB limit.");
+      throw new Error("That PDF is over the 100 MB limit.");
     }
 
     const stored = await ctx.storage.getMetadata(args.storageId);
