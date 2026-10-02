@@ -179,8 +179,12 @@ export async function prepareNoteImage(file: File): Promise<{
   return { data: render(2000, 0.82), thumb: render(320, 0.65) };
 }
 
-/** Convex file storage allows 32 MiB per file; stay comfortably under it. */
-export const MAX_PDF_BYTES = 25 * 1024 * 1024;
+/**
+ * Uploads go straight to storage, where Convex has no per-file cap — but the
+ * upload POST has a 2-minute timeout, so this is roughly what a phone on a
+ * slow connection can actually deliver.
+ */
+export const MAX_PDF_BYTES = 100 * 1024 * 1024;
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

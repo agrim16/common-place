@@ -878,7 +878,8 @@ export function NotesPanel() {
         ) : (
           <p className="mt-3 text-[15px] italic leading-7 text-muted-foreground">
             No PDFs yet. Upload a worksheet or past paper (up to{" "}
-            {formatBytes(MAX_PDF_BYTES)}) — it is summarised on arrival.
+            {formatBytes(MAX_PDF_BYTES)}) — it is summarised on arrival,
+            however large.
           </p>
         )}
       </section>

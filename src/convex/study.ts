@@ -565,6 +565,21 @@ export const renameNoteFile = mutation({
   },
 });
 
+/** Remember the Gemini Files handle so we only upload a PDF once. */
+export const cacheGeminiFile = mutation({
+  args: { id: v.id("noteFiles"), uri: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await requireUser(ctx);
+    const file = await ctx.db.get(args.id);
+    if (!file) return;
+    if (file.userId !== userId) throw new Error("Not your file");
+    await ctx.db.patch(args.id, {
+      geminiUri: args.uri.slice(0, 500),
+      geminiAt: Date.now(),
+    });
+  },
+});
+
 export const setNoteFileSummary = mutation({
   args: {
     id: v.id("noteFiles"),
@@ -611,6 +626,8 @@ export const noteFileSource = query({
         storageId: file.storageId,
         bytes: file.bytes,
         transcript: file.transcript,
+        geminiUri: file.geminiUri,
+        geminiAt: file.geminiAt,
       }));
   },
 });

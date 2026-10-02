@@ -358,14 +358,12 @@ export const summarizeFile = action({
     });
     const file = files[0];
     if (!file) throw new Error("That file isn't yours.");
-    if (file.bytes > MAX_INLINE_PDF_BYTES) {
-      throw new Error(
-        "That PDF is too large for the AI to read at once — try an under-14 MB copy.",
-      );
-    }
 
     const apiKey = await requireApiKey();
-    const attached = await fileParts(ctx, [args.fileId]);
+    const attached = await fileParts(ctx, apiKey, [args.fileId]);
+    if (attached.parts.length === 0) {
+      throw new Error("That PDF is too large for the AI to read — try a shorter one.");
+    }
 
     const prompt = [
       `Read this PDF from a student's library, filed as "${file.title}".`,
@@ -404,27 +402,140 @@ async function photoParts(ctx: ActionCtx, ids: Id<"noteImages">[] | undefined) {
   };
 }
 
-/** Turn PDFs in storage into Gemini inline document parts. */
-async function fileParts(ctx: ActionCtx, ids: Id<"noteFiles">[] | undefined) {
+/** Turn PDFs in storage into Gemini parts, whatever their size. */
+async function fileParts(
+  ctx: ActionCtx,
+  apiKey: string,
+  ids: Id<"noteFiles">[] | undefined,
+) {
   if (!ids?.length) return { parts: [], labels: [], tooBig: [] as string[] };
   const files = await ctx.runQuery(api.study.noteFileSource, { ids });
-  const parts: Array<{ inlineData: { mimeType: string; data: string } }> = [];
+  const parts: Array<Record<string, unknown>> = [];
   const labels: string[] = [];
   const tooBig: string[] = [];
 
   for (const file of files) {
-    if (file.bytes > MAX_INLINE_PDF_BYTES) {
+    const part = await pdfPart(ctx, apiKey, file);
+    if (!part) {
       tooBig.push(file.title);
       continue;
     }
-    const blob = await ctx.storage.get(file.storageId);
-    if (!blob) continue;
-    const data = Buffer.from(await blob.arrayBuffer()).toString("base64");
-    parts.push({ inlineData: { mimeType: file.mimeType, data } });
+    parts.push(part);
     labels.push(`${file.title} (PDF)`);
   }
 
   return { parts, labels, tooBig };
+}
+
+/** Gemini Files API handles expire after 48h, so refresh well before that. */
+const GEMINI_HANDLE_TTL = 40 * 60 * 60 * 1000;
+
+/**
+ * One PDF, the cheapest way we can give it to Gemini: a cached Files API
+ * handle if we have a fresh one, otherwise the bytes inline (which is fine for
+ * anything small), otherwise upload it once to the Files API and keep the
+ * handle for the next two days.
+ */
+async function pdfPart(
+  ctx: ActionCtx,
+  apiKey: string,
+  file: {
+    _id: Id<"noteFiles">;
+    storageId: string;
+    bytes: number;
+    mimeType: string;
+    geminiUri?: string;
+    geminiAt?: number;
+  },
+): Promise<Record<string, unknown> | null> {
+  if (file.geminiUri && file.geminiAt && Date.now() - file.geminiAt < GEMINI_HANDLE_TTL) {
+    return {
+      fileData: { mimeType: file.mimeType, fileUri: file.geminiUri },
+    };
+  }
+
+  const blob = await ctx.storage.get(file.storageId);
+  if (!blob) return null;
+
+  if (file.bytes <= MAX_INLINE_PDF_BYTES) {
+    const data = Buffer.from(await blob.arrayBuffer()).toString("base64");
+    return { inlineData: { mimeType: file.mimeType, data } };
+  }
+
+  // Too big to inline: hand it to the Files API once, then reference it.
+  try {
+    const uri = await uploadToGeminiFiles(apiKey, blob, file._id);
+    await ctx.runMutation(api.study.cacheGeminiFile, { id: file._id, uri });
+    return { fileData: { mimeType: file.mimeType, fileUri: uri } };
+  } catch (error) {
+    console.log(`[gemini] files upload failed: ${String(error).slice(0, 200)}`);
+    return null;
+  }
+}
+
+/**
+ * Upload a blob to the Gemini Files API with the resumable protocol and return
+ * its fileUri. This is what removes the ~14 MB inline ceiling: the document is
+ * uploaded once and referenced by handle from then on.
+ */
+async function uploadToGeminiFiles(
+  apiKey: string,
+  blob: Blob,
+  displayName: string,
+): Promise<string> {
+  const start = await fetch(
+    "https://generativelanguage.googleapis.com/upload/v1beta/files",
+    {
+      method: "POST",
+      headers: {
+        "x-goog-api-key": apiKey,
+        "X-Goog-Upload-Protocol": "resumable",
+        "X-Goog-Upload-Command": "start",
+        "X-Goog-Upload-Header-Content-Length": String(blob.size),
+        "X-Goog-Upload-Header-Content-Type": blob.type || "application/pdf",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ file: { display_name: displayName } }),
+    },
+  );
+  if (!start.ok) {
+    throw new Error(`files.start HTTP ${start.status}: ${await start.text()}`);
+  }
+  const uploadUrl = start.headers.get("x-goog-upload-url");
+  if (!uploadUrl) throw new Error("files.start returned no upload URL");
+
+  const bytes = Buffer.from(await blob.arrayBuffer());
+  const done = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "Content-Length": String(bytes.byteLength),
+      "X-Goog-Upload-Offset": "0",
+      "X-Goog-Upload-Command": "upload, finalize",
+    },
+    body: bytes,
+  });
+  if (!done.ok) {
+    throw new Error(`files.upload HTTP ${done.status}: ${await done.text()}`);
+  }
+  const { file } = (await done.json()) as { file?: { name?: string; uri?: string } };
+  const name = file?.name;
+  if (!name) throw new Error("files.upload returned no file name");
+
+  // The file is usable only once Gemini finishes processing it.
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const status = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/${name}`,
+      { headers: { "x-goog-api-key": apiKey } },
+    );
+    if (!status.ok) continue;
+    const info = (await status.json()) as { state?: string };
+    if (info.state === "ACTIVE") {
+      return file?.uri ?? `https://generativelanguage.googleapis.com/v1beta/${name}`;
+    }
+    if (info.state === "FAILED") throw new Error("Gemini could not process the PDF");
+  }
+  throw new Error("Gemini did not finish processing the PDF in time");
 }
 
 /**
@@ -515,7 +626,7 @@ export const askStudyHelper = action({
     );
     // Only send the raw material when we have no stored transcription of it.
     const photos = await photoParts(ctx, read.needPhotos);
-    const documents = await fileParts(ctx, read.needFiles);
+    const documents = await fileParts(ctx, apiKey, read.needFiles);
 
     const system = [
       "You are the study helper inside Commonplace, a study desk for students.",
@@ -663,7 +774,7 @@ export const generateQuiz = action({
 
     const read = await transcriptSources(ctx, args.photoIds, args.fileIds);
     const photos = await photoParts(ctx, read.needPhotos);
-    const documents = await fileParts(ctx, read.needFiles);
+    const documents = await fileParts(ctx, apiKey, read.needFiles);
 
     const source = [
       note

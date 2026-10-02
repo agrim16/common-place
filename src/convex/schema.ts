@@ -87,6 +87,8 @@ const schema = defineSchema(
       title: v.string(),
       mimeType: v.string(), // "application/pdf"
       storageId: v.string(), // Convex storage handle for the real bytes
+      geminiUri: v.optional(v.string()), // Files API handle, valid ~48h
+      geminiAt: v.optional(v.number()), // when that handle was created
       bytes: v.number(), // original file size in bytes
       summary: v.optional(v.string()),
       transcript: v.optional(v.string()),
