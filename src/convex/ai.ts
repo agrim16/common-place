@@ -5,8 +5,86 @@ import { v } from "convex/values";
 import { api } from "./_generated/api";
 import { action } from "./_generated/server";
 
-const MODEL = "gemini-2.5-flash";
 const MAX_HISTORY = 8;
+
+/** Tried in order; the first that exists on this key's account wins. */
+const CANDIDATE_MODELS = [
+  process.env.GEMINI_MODEL,
+  "gemini-flash-latest",
+  "gemini-3.1-flash-lite",
+].filter((model): model is string => Boolean(model));
+
+type Attempt =
+  | { kind: "ok"; answer: string }
+  | { kind: "missing" }
+  | { kind: "error"; status: number };
+
+async function extractAnswer(data: {
+  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+}): Promise<string> {
+  return (data.candidates ?? [])
+    .flatMap((candidate) => candidate.content?.parts ?? [])
+    .map((part) => part.text ?? "")
+    .join("")
+    .trim();
+}
+
+async function tryGenerate(
+  model: string,
+  apiKey: string,
+  payload: unknown,
+): Promise<Attempt> {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (response.ok) {
+    const answer = await extractAnswer(await response.json());
+    return answer ? { kind: "ok", answer } : { kind: "missing" };
+  }
+  if (response.status === 404 || response.status === 503) {
+    return { kind: "missing" };
+  }
+  const detail = await response.text().catch(() => "");
+  console.error("Gemini error", model, response.status, detail);
+  return { kind: "error", status: response.status };
+}
+
+/** Ask the account which generateContent models it can actually use. */
+async function discoverModel(apiKey: string): Promise<string | null> {
+  try {
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100",
+      { headers: { "x-goog-api-key": apiKey } },
+    );
+    if (!response.ok) return null;
+    const data = (await response.json()) as {
+      models?: Array<{
+        name?: string;
+        supportedGenerationMethods?: string[];
+      }>;
+    };
+    const names = (data.models ?? [])
+      .filter((m) =>
+        (m.supportedGenerationMethods ?? []).includes("generateContent"),
+      )
+      .map((m) => String(m.name ?? "").replace(/^models\//, ""))
+      .filter(Boolean);
+    return (
+      names.find((n) => n.includes("flash") && !n.startsWith("gemini-2.5")) ??
+      names.find((n) => n.includes("flash")) ??
+      names[0] ??
+      null
+    );
+  } catch (error) {
+    console.error("Model discovery failed", error);
+    return null;
+  }
+}
 
 /**
  * The study helper: a Gemini-backed tutor that can see the student's day —
@@ -52,55 +130,44 @@ export const askStudyHelper = action({
       `Student data (JSON): ${JSON.stringify(context)}`,
     ].join("\n");
 
-    const contents = [
-      ...args.history
-        .slice(-MAX_HISTORY)
-        .map((message) => ({
-          role: message.role,
-          parts: [{ text: message.text.slice(0, 2000) }],
-        })),
-      { role: "user" as const, parts: [{ text: question.slice(0, 4000) }] },
-    ];
+    const payload = {
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [
+        ...args.history
+          .slice(-MAX_HISTORY)
+          .map((message) => ({
+            role: message.role,
+            parts: [{ text: message.text.slice(0, 2000) }],
+          })),
+        { role: "user" as const, parts: [{ text: question.slice(0, 4000) }] },
+      ],
+      generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
+    };
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": apiKey,
-        },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: system }] },
-          contents,
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 1024,
-          },
-        }),
-      },
-    );
-
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      console.error("Gemini error", response.status, detail);
-      throw new Error(
-        response.status === 429
-          ? "The helper is rate-limited right now — wait a moment and try again."
-          : `The study helper could not answer (HTTP ${response.status}).`,
-      );
+    // Preferred models first, then whatever this key can actually use.
+    for (const model of CANDIDATE_MODELS) {
+      const attempt = await tryGenerate(model, apiKey, payload);
+      if (attempt.kind === "ok") return { answer: attempt.answer, model };
+      if (attempt.kind === "error" && attempt.status === 429) {
+        throw new Error(
+          "The helper is rate-limited right now — wait a moment and try again.",
+        );
+      }
+      if (attempt.kind === "error") {
+        throw new Error(
+          `The study helper could not answer (HTTP ${attempt.status}).`,
+        );
+      }
     }
 
-    const data = (await response.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    };
-    const answer = (data.candidates ?? [])
-      .flatMap((candidate) => candidate.content?.parts ?? [])
-      .map((part) => part.text ?? "")
-      .join("")
-      .trim();
+    const discovered = await discoverModel(apiKey);
+    if (discovered) {
+      const attempt = await tryGenerate(discovered, apiKey, payload);
+      if (attempt.kind === "ok") return { answer: attempt.answer, model: discovered };
+    }
 
-    if (!answer) throw new Error("The helper returned nothing — try rephrasing.");
-    return { answer };
+    throw new Error(
+      "No usable Gemini model was found for this API key — check GEMINI_API_KEY (or set GEMINI_MODEL).",
+    );
   },
 });
