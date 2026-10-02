@@ -4,11 +4,22 @@ import { Progress } from "@/components/ui/progress";
 import { api } from "@/convex/_generated/api";
 import {
   ACCEPTED_IMAGE_EXTENSIONS,
+  MAX_PDF_BYTES,
+  formatBytes,
   prepareNoteImage,
+  readPdfAsChunks,
 } from "@/lib/study";
 import type { Id } from "@/convex/_generated/dataModel";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { Check, FileUp, Loader2, RotateCcw, Sparkles, X } from "lucide-react";
+import {
+  Check,
+  FileText,
+  FileUp,
+  Loader2,
+  RotateCcw,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -48,6 +59,7 @@ export function QuizPanel() {
   );
   const [noteId, setNoteId] = useState<Id<"notes"> | null>(null);
   const [photoId, setPhotoId] = useState<Id<"noteImages"> | null>(null);
+  const [fileId, setFileId] = useState<Id<"noteFiles"> | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [questions, setQuestions] = useState<Question[] | null>(null);
@@ -60,6 +72,9 @@ export function QuizPanel() {
   const notes = useQuery(api.study.listNotes);
   const photos = useQuery(api.study.listNoteImages);
   const createNoteImage = useMutation(api.study.createNoteImage);
+  const files = useQuery(api.study.listNoteFiles);
+  const createNoteFile = useMutation(api.study.createNoteFile);
+  const putFileChunk = useMutation(api.study.putNoteFileChunk);
   const summarise = useAction(api.ai.summarizePhoto);
   const attempts = useQuery(api.study.listQuizAttempts) ?? NO_ATTEMPTS;
   const generate = useAction(api.ai.generateQuiz);
@@ -101,6 +116,7 @@ export function QuizPanel() {
         count: questionCount,
         noteId: noteId ?? undefined,
         photoIds: photoId ? [photoId] : undefined,
+        fileIds: fileId ? [fileId] : undefined,
       });
       setQuestions(result.questions);
       setQuizTopic(result.topic);
@@ -112,6 +128,33 @@ export function QuizPanel() {
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "The quiz could not be set.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePdf = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setBusy(true);
+    try {
+      const { chunks, bytes } = await readPdfAsChunks(file);
+      const id = await createNoteFile({
+        title: file.name.replace(/\.[^.]+$/, "") || "Worksheet",
+        mimeType: "application/pdf",
+        bytes,
+        chunkCount: chunks.length,
+      });
+      for (const [index, data] of chunks.entries()) {
+        await putFileChunk({ fileId: id, index, data });
+      }
+      setFileId(id);
+      toast.success(`${file.name} attached — the quiz will use it.`);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not read that PDF.",
       );
     } finally {
       setBusy(false);
@@ -185,8 +228,8 @@ export function QuizPanel() {
         <h2 className="mt-2 text-2xl font-medium">Be quizzed on anything</h2>
         <p className="mt-2 text-[15px] italic leading-7 text-muted-foreground">
           Name a topic and the examiner will set a fresh multiple-choice paper
-          for you — or point it at one of your own notes and it will question
-          you on that instead.
+          for you — or point it at a photo of your notes, a PDF, or a written
+          note, and it will question you on that instead.
         </p>
 
         <div className="mt-5 space-y-4">
@@ -278,6 +321,50 @@ export function QuizPanel() {
                   {photos.map((photo) => (
                     <option key={photo._id} value={photo._id}>
                       {photo.title}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            <div className="mt-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-archive text-[10px] text-muted-foreground">
+                  Or question a PDF
+                </span>
+                <label className="font-archive inline-flex cursor-pointer items-center gap-1.5 rounded-sm border border-border px-2.5 py-1.5 text-[9px] text-foreground transition-colors hover:border-primary hover:text-primary">
+                  {busy ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <FileText className="size-3.5" />
+                  )}
+                  {busy ? "Filing…" : `Upload .pdf (max ${formatBytes(MAX_PDF_BYTES)})`}
+                  <input
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    className="hidden"
+                    onChange={(e) => void handlePdf(e)}
+                  />
+                </label>
+              </div>
+              {files && files.length > 0 && (
+                <select
+                  value={fileId ?? ""}
+                  onChange={(e) =>
+                    setFileId(
+                      e.target.value
+                        ? (e.target.value as Id<"noteFiles">)
+                        : null,
+                    )
+                  }
+                  disabled={busy}
+                  aria-label="PDF to quiz from"
+                  className="mt-1.5 flex h-9 w-full rounded-md border border-input bg-background/80 px-3 text-sm"
+                >
+                  <option value="">No PDF</option>
+                  {files.map((file) => (
+                    <option key={file._id} value={file._id}>
+                      {file.title}
                     </option>
                   ))}
                 </select>

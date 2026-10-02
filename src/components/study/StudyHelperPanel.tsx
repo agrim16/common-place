@@ -5,12 +5,16 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import {
   ACCEPTED_IMAGE_EXTENSIONS,
+  formatBytes,
+  MAX_PDF_BYTES,
   prepareNoteImage,
+  readPdfAsChunks,
 } from "@/lib/study";
 import { useAction, useMutation, useQuery } from "convex/react";
 import {
   BookOpen,
   Check,
+  FileText,
   FileUp,
   ImageIcon,
   Loader2,
@@ -42,6 +46,9 @@ export function StudyHelperPanel() {
   const [busy, setBusy] = useState(false);
   const [noteId, setNoteId] = useState<Id<"notes"> | null>(null);
   const [photoId, setPhotoId] = useState<Id<"noteImages"> | null>(null);
+  const [fileId, setFileId] = useState<Id<"noteFiles"> | null>(null);
+  const [uploadingPdf, setUploadingPdf] = useState(false);
+  const [summarisingFile, setSummarisingFile] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -60,6 +67,12 @@ export function StudyHelperPanel() {
   const renamePhoto = useMutation(api.study.renameNoteImage);
   const renameNoteMutation = useMutation(api.study.renameNote);
   const summarise = useAction(api.ai.summarizePhoto);
+  const files = useQuery(api.study.listNoteFiles);
+  const createNoteFile = useMutation(api.study.createNoteFile);
+  const putFileChunk = useMutation(api.study.putNoteFileChunk);
+  const removeFile = useMutation(api.study.deleteNoteFile);
+  const renameFile = useMutation(api.study.renameNoteFile);
+  const summariseFile = useAction(api.ai.summarizeFile);
   const ask = useAction(api.ai.askStudyHelper);
   const createNote = useMutation(api.study.createNote);
   const removeNote = useMutation(api.study.deleteNote);
@@ -81,6 +94,7 @@ export function StudyHelperPanel() {
         question,
         noteId: noteId ?? undefined,
         photoIds: photoId ? [photoId] : undefined,
+        fileIds: fileId ? [fileId] : undefined,
         history,
       });
       setMessages((prev) => [...prev, { role: "helper", text: result.answer }]);
@@ -133,14 +147,59 @@ export function StudyHelperPanel() {
     }
   };
 
+  const runFileSummary = async (id: Id<"noteFiles">, name: string) => {
+    setSummarisingFile(id);
+    try {
+      const result = await summariseFile({ fileId: id });
+      toast.success(`“${name}” summarised.`, {
+        description: result.summary.slice(0, 140),
+      });
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "That PDF could not be summarised.",
+      );
+    } finally {
+      setSummarisingFile(null);
+    }
+  };
+
+  const handlePdf = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setUploadingPdf(true);
+    try {
+      const { chunks, bytes } = await readPdfAsChunks(file);
+      const id = await createNoteFile({
+        title: file.name.replace(/\.[^.]+$/, "") || "Worksheet",
+        mimeType: "application/pdf",
+        bytes,
+        chunkCount: chunks.length,
+      });
+      for (const [index, data] of chunks.entries()) {
+        await putFileChunk({ fileId: id, index, data });
+      }
+      toast.success(`${file.name} filed — reading it now…`);
+      void runFileSummary(id, file.name);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not read that PDF.",
+      );
+    } finally {
+      setUploadingPdf(false);
+    }
+  };
+
   const startRename = (id: string, title: string) => {
     setRenamingId(id);
     setRenameValue(title);
   };
 
   const commitRename = async (
-    kind: "photo" | "note",
-    id: Id<"noteImages"> | Id<"notes">,
+    kind: "photo" | "note" | "file",
+    id: Id<"noteImages"> | Id<"notes"> | Id<"noteFiles">,
   ) => {
     const title = renameValue.trim();
     setRenamingId(null);
@@ -148,6 +207,8 @@ export function StudyHelperPanel() {
     try {
       if (kind === "photo") {
         await renamePhoto({ id: id as Id<"noteImages">, title });
+      } else if (kind === "file") {
+        await renameFile({ id: id as Id<"noteFiles">, title });
       } else {
         await renameNoteMutation({ id: id as Id<"notes">, title });
       }
@@ -258,6 +319,30 @@ export function StudyHelperPanel() {
                 </select>
               </label>
             )}
+
+          {files && files.length > 0 && (
+            <label className="mt-3 block">
+              <span className="font-archive text-[10px] text-muted-foreground">
+                Or one of your PDFs
+              </span>
+              <select
+                value={fileId ?? ""}
+                onChange={(e) =>
+                  setFileId(
+                    e.target.value ? (e.target.value as Id<"noteFiles">) : null,
+                  )
+                }
+                className="mt-1 flex h-9 w-full rounded-md border border-input bg-background/80 px-3 text-sm"
+              >
+                <option value="">No PDF</option>
+                {files.map((file) => (
+                  <option key={file._id} value={file._id}>
+                    {file.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           {photos && photos.length > 0 && (
             <label className="mt-3 block">
@@ -386,11 +471,153 @@ export function StudyHelperPanel() {
             Powered by Gemini · answers use today&apos;s data
             {selectedNote ? " and the selected note" : ""}
             {photoId ? " and the selected photo" : ""}
+            {fileId ? " and the selected PDF" : ""}
           </p>
         </div>
       ) : (
         /* ------------------------------ Notes tab ------------------------------ */
         <div className="mt-5">
+          {/* PDF library */}
+          <div className="rounded-sm border border-dashed border-primary/50 bg-background/50 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="font-archive flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <FileText className="size-3.5" />
+                PDFs · worksheets, handouts, past papers
+              </span>
+              <label className="font-archive inline-flex cursor-pointer items-center gap-1.5 rounded-sm border border-border px-2.5 py-1.5 text-[9px] text-foreground transition-colors hover:border-primary hover:text-primary">
+                {uploadingPdf ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <FileUp className="size-3.5" />
+                )}
+                {uploadingPdf ? "Filing…" : "Upload .pdf"}
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  className="hidden"
+                  onChange={(e) => void handlePdf(e)}
+                />
+              </label>
+            </div>
+
+            {files && files.length > 0 ? (
+              <ul className="mt-3 divide-y divide-border/70">
+                {files.map((file) => (
+                  <li key={file._id} className="py-2.5">
+                    <div className="flex items-start gap-3">
+                      <FileText className="mt-1 size-4 shrink-0 text-primary" />
+                      <div className="min-w-0 flex-1">
+                        {renamingId === file._id ? (
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              autoFocus
+                              value={renameValue}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter")
+                                  void commitRename("file", file._id);
+                                if (e.key === "Escape") setRenamingId(null);
+                              }}
+                              maxLength={120}
+                              aria-label="File title"
+                              className="w-full rounded-sm border border-input bg-background px-2 py-1 text-[15px]"
+                            />
+                            <button
+                              type="button"
+                              aria-label="Save name"
+                              onClick={() => void commitRename("file", file._id)}
+                              className="shrink-0 text-primary"
+                            >
+                              <Check className="size-4" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFileId(file._id);
+                              setTab("ask");
+                              toast(`Now asking about “${file.title}”.`);
+                            }}
+                            className="block w-full truncate text-left text-[16px] font-medium hover:text-primary"
+                          >
+                            {file.title}
+                          </button>
+                        )}
+                        <span className="font-archive text-[9px] text-muted-foreground">
+                          PDF · {formatBytes(file.bytes)}
+                        </span>
+
+                        {summarisingFile === file._id ? (
+                          <span className="font-archive mt-1 flex items-center gap-1 text-[9px] text-muted-foreground">
+                            <Loader2 className="size-3 animate-spin" />
+                            Reading the document…
+                          </span>
+                        ) : file.summary ? (
+                          <p
+                            title={file.summary}
+                            className="mt-1 line-clamp-2 text-[13px] leading-5 italic text-muted-foreground"
+                          >
+                            {file.summary}
+                          </p>
+                        ) : null}
+
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <button
+                            type="button"
+                            title="Rename"
+                            aria-label="Rename PDF"
+                            onClick={() => startRename(file._id, file.title)}
+                            className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-primary"
+                          >
+                            <Pencil className="size-3.5" />
+                          </button>
+                          {!file.summary && (
+                            <button
+                              type="button"
+                              title="Read this document again"
+                              aria-label="Summarise PDF"
+                              onClick={() =>
+                                void runFileSummary(file._id, file.title)
+                              }
+                              className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-primary"
+                            >
+                              <Sparkles className="size-3.5" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            title="Delete"
+                            aria-label="Delete PDF"
+                            onClick={() => {
+                              if (fileId === file._id) setFileId(null);
+                              void removeFile({ id: file._id }).catch((error) =>
+                                toast.error(
+                                  error instanceof Error
+                                    ? error.message
+                                    : "Could not delete.",
+                                ),
+                              );
+                            }}
+                            className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-destructive"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 text-[15px] italic leading-7 text-muted-foreground">
+                No PDFs yet. Upload a worksheet or past paper (up to{" "}
+                {formatBytes(MAX_PDF_BYTES)}) — the helper summarises it, and the
+                quiz can be set straight from it.
+              </p>
+            )}
+          </div>
+
           {/* Photo library */}
           <div className="rounded-sm border border-dashed border-primary/50 bg-background/50 p-4">
             <div className="flex items-center justify-between gap-3">
@@ -487,44 +714,48 @@ export function StudyHelperPanel() {
                           {photo.summary}
                         </p>
                       ) : null}
-                    </div>
 
-                    <div className="absolute top-1 right-1 flex gap-1 opacity-0 transition-all group-hover:opacity-100 focus-within:opacity-100">
-                      <button
-                        type="button"
-                        aria-label="Rename photo"
-                        onClick={() => startRename(photo._id, photo.title)}
-                        className="rounded-sm bg-background/90 p-1.5 text-muted-foreground hover:text-primary"
-                      >
-                        <Pencil className="size-3.5" />
-                      </button>
-                      {!photo.summary && (
+                      {/* Always visible: hover-only controls were unreachable on touch */}
+                      <div className="mt-1.5 flex items-center gap-1 border-t border-dashed border-border/70 pt-1.5">
                         <button
                           type="button"
-                          aria-label="Summarise photo"
-                          onClick={() => void runSummary(photo._id, photo.title)}
-                          className="rounded-sm bg-background/90 p-1.5 text-muted-foreground hover:text-primary"
+                          aria-label="Rename photo"
+                          title="Rename"
+                          onClick={() => startRename(photo._id, photo.title)}
+                          className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-primary"
                         >
-                          <Sparkles className="size-3.5" />
+                          <Pencil className="size-3.5" />
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        aria-label="Delete photo"
-                        onClick={() => {
-                          if (photoId === photo._id) setPhotoId(null);
-                          void removePhoto({ id: photo._id }).catch((error) =>
-                            toast.error(
-                              error instanceof Error
-                                ? error.message
-                                : "Could not delete.",
-                            ),
-                          );
-                        }}
-                        className="rounded-sm bg-background/90 p-1.5 text-muted-foreground hover:text-destructive"
-                      >
-                        <Trash2 className="size-3.5" />
-                      </button>
+                        {!photo.summary && (
+                          <button
+                            type="button"
+                            aria-label="Summarise photo"
+                            title="Read this page again"
+                            onClick={() => void runSummary(photo._id, photo.title)}
+                            className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-primary"
+                          >
+                            <Sparkles className="size-3.5" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          aria-label="Delete photo"
+                          title="Delete"
+                          onClick={() => {
+                            if (photoId === photo._id) setPhotoId(null);
+                            void removePhoto({ id: photo._id }).catch((error) =>
+                              toast.error(
+                                error instanceof Error
+                                  ? error.message
+                                  : "Could not delete.",
+                              ),
+                            );
+                          }}
+                          className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-destructive"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </li>
                 ))}
@@ -642,23 +873,24 @@ export function StudyHelperPanel() {
                       type="button"
                       aria-label="Rename note"
                       onClick={() => startRename(note._id, note.title)}
-                      className="shrink-0 rounded-sm p-1.5 text-muted-foreground opacity-0 transition-all hover:text-primary focus-visible:opacity-100 group-hover:opacity-100"
+                      title="Rename"
+                      className="shrink-0 rounded-sm p-1.5 text-muted-foreground transition-colors hover:text-primary"
                     >
                       <Pencil className="size-4" />
                     </button>
                     <button
-                      type="button"
-                      aria-label="Delete note"
-                    onClick={() =>
-                      void removeNote({ id: note._id }).catch((error) =>
-                        toast.error(
-                          error instanceof Error
-                            ? error.message
-                            : "Could not delete.",
-                        ),
-                      )
-                    }
-                    className="shrink-0 rounded-sm p-1.5 text-muted-foreground opacity-0 transition-all hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
+                      type="button"aria-label="Delete note"
+                      title="Delete"
+                      onClick={() =>
+                        void removeNote({ id: note._id }).catch((error) =>
+                          toast.error(
+                            error instanceof Error
+                              ? error.message
+                              : "Could not delete.",
+                          ),
+                        )
+                      }
+                      className="shrink-0 rounded-sm p-1.5 text-muted-foreground transition-colors hover:text-destructive"
                   >
                     <Trash2 className="size-4" />
                   </button>

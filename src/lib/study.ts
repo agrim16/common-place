@@ -157,6 +157,48 @@ export async function prepareNoteImage(file: File): Promise<{
   return { data: render(1400, 0.72), thumb: render(240, 0.6) };
 }
 
+export const MAX_PDF_BYTES = 4_000_000;
+export const PDF_CHUNK_CHARS = 400_000;
+
+function bufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const step = 0x8000;
+  for (let i = 0; i < bytes.length; i += step) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + step));
+  }
+  return btoa(binary);
+}
+
+/**
+ * Read a PDF into base64 slices. Convex documents must stay under 1 MiB, so
+ * the file is stored as several chunks and reassembled server-side.
+ */
+export async function readPdfAsChunks(file: File): Promise<{
+  chunks: string[];
+  bytes: number;
+}> {
+  const looksPdf =
+    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+  if (!looksPdf) throw new Error("Only PDF files can be filed here.");
+  if (file.size > MAX_PDF_BYTES) {
+    throw new Error("That PDF is over 4 MB — try a shorter one.");
+  }
+  const buffer = await file.arrayBuffer();
+  const base64 = bufferToBase64(buffer);
+  const chunks: string[] = [];
+  for (let i = 0; i < base64.length; i += PDF_CHUNK_CHARS) {
+    chunks.push(base64.slice(i, i + PDF_CHUNK_CHARS));
+  }
+  return { chunks, bytes: file.size };
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function romanNumeral(n: number): string {
   if (n <= 0 || n > 3999) return String(n);
   const map: Array<[number, string]> = [

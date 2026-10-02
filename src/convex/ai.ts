@@ -175,6 +175,18 @@ async function photoParts(ctx: ActionCtx, ids: Id<"noteImages">[] | undefined) {
   };
 }
 
+/** Turn attached PDFs into Gemini inline document parts. */
+async function fileParts(ctx: ActionCtx, ids: Id<"noteFiles">[] | undefined) {
+  if (!ids?.length) return { parts: [], labels: [] };
+  const files = await ctx.runQuery(api.study.noteFileData, { ids });
+  return {
+    parts: files.map((file) => ({
+      inlineData: { mimeType: file.mimeType, data: file.data },
+    })),
+    labels: files.map((file) => `${file.title} (PDF)`),
+  };
+}
+
 /**
  * The study helper: a Gemini-backed tutor that can see the student's day —
  * today's focus minutes, timetable, open reminders and optionally an uploaded
@@ -185,6 +197,7 @@ export const askStudyHelper = action({
     question: v.string(),
     noteId: v.optional(v.id("notes")),
     photoIds: v.optional(v.array(v.id("noteImages"))),
+    fileIds: v.optional(v.array(v.id("noteFiles"))),
     history: v.array(
       v.object({
         role: v.union(v.literal("user"), v.literal("model")),
@@ -205,6 +218,7 @@ export const askStudyHelper = action({
       noteId: args.noteId,
     });
     const photos = await photoParts(ctx, args.photoIds);
+    const documents = await fileParts(ctx, args.fileIds);
 
     const system = [
       "You are the study helper inside Commonplace, a study desk for students.",
@@ -235,6 +249,14 @@ export const askStudyHelper = action({
                     text: `Attached photos of the student's own notes: ${photos.labels.join(", ")}.`,
                   },
                   ...photos.parts,
+                ]
+              : []),
+            ...(documents.parts.length > 0
+              ? [
+                  {
+                    text: `Attached PDFs from the student's own library: ${documents.labels.join(", ")}.`,
+                  },
+                  ...documents.parts,
                 ]
               : []),
           ],
@@ -367,6 +389,61 @@ export const summarizePhoto = action({
   },
 });
 
+/** Read an uploaded PDF: what it covers, and the facts worth revising. */
+export const summarizeFile = action({
+  args: { fileId: v.id("noteFiles") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to use your notes.");
+
+    const files = await ctx.runQuery(api.study.noteFileData, {
+      ids: [args.fileId],
+    });
+    const file = files[0];
+    if (!file) throw new Error("That file isn't yours, or upload was cut short.");
+
+    const apiKey = await requireApiKey();
+    const attached = await fileParts(ctx, [args.fileId]);
+
+    const prompt = [
+      `You are reading a PDF from a student's library, titled "${file.title}".`,
+      "Summarise it for revision.",
+      "",
+      'Reply with JSON only: {"summary":"4-6 sentences on what this document covers","keyPoints":["6-10 short bullet points of the actual examinable content"],"subject":"the single subject or topic this belongs to"}',
+      "If the PDF is scanned with no readable text, say so in the summary.",
+    ].join("\n");
+
+    const payload = {
+      contents: [
+        {
+          role: "user" as const,
+          parts: [{ text: prompt }, ...attached.parts],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 2048,
+        responseMimeType: "application/json",
+      },
+    };
+
+    const { text, model } = await generateText(apiKey, payload);
+    const parsed = extractJson(text);
+    const summary = asString(parsed.summary) || "No summary could be read.";
+    const keyPoints = Array.isArray(parsed.keyPoints)
+      ? parsed.keyPoints.map(asString).filter(Boolean)
+      : [];
+
+    await ctx.runMutation(api.study.setNoteFileSummary, {
+      id: args.fileId,
+      summary,
+      keyPoints,
+    });
+
+    return { summary, keyPoints, model, userId };
+  },
+});
+
 /**
  * Build a multiple-choice quiz on any topic with Gemini. When the student picks
  * a note, the quiz is written from that note's own material.
@@ -377,6 +454,7 @@ export const generateQuiz = action({
     count: v.optional(v.number()),
     noteId: v.optional(v.id("notes")),
     photoIds: v.optional(v.array(v.id("noteImages"))),
+    fileIds: v.optional(v.array(v.id("noteFiles"))),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -393,6 +471,7 @@ export const generateQuiz = action({
     }) : null;
 
     const photos = await photoParts(ctx, args.photoIds);
+    const documents = await fileParts(ctx, args.fileIds);
 
     const source = [
       note
@@ -401,6 +480,11 @@ export const generateQuiz = action({
       ...(photos.parts.length > 0
         ? [
             `Also use the attached photos of the student's handwritten notes (${photos.labels.join(", ")}) as source material — transcribe them before writing questions.`,
+          ]
+        : []),
+      ...(documents.parts.length > 0
+        ? [
+            `Also use the attached PDFs (${documents.labels.join(", ")}) as source material — read them before writing questions.`,
           ]
         : []),
     ].join("\n");
@@ -422,7 +506,7 @@ export const generateQuiz = action({
       contents: [
         {
           role: "user" as const,
-          parts: [{ text: prompt }, ...photos.parts],
+          parts: [{ text: prompt }, ...photos.parts, ...documents.parts],
         },
       ],
       generationConfig: {

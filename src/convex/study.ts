@@ -401,6 +401,171 @@ export const noteImageData = query({
   },
 });
 
+/* ------------------------------ PDF files ------------------------------ */
+
+const PDF_MIME = "application/pdf";
+const MAX_PDF_CHUNKS = 16;
+
+/** PDF library — metadata only, never the bytes. */
+export const listNoteFiles = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const files = await ctx.db
+      .query("noteFiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    return files
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map(({ _id, title, mimeType, bytes, summary, keyPoints, createdAt }) => ({
+        _id,
+        title,
+        mimeType,
+        bytes,
+        summary,
+        keyPoints,
+        createdAt,
+      }));
+  },
+});
+
+/** Step 1: reserve the file record. Bytes follow one chunk per request. */
+export const createNoteFile = mutation({
+  args: {
+    title: v.string(),
+    mimeType: v.string(),
+    bytes: v.number(),
+    chunkCount: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUser(ctx);
+    const title = args.title.trim();
+    if (!title) throw new Error("Give the file a title");
+    if (args.mimeType !== PDF_MIME) throw new Error("Only PDFs can be filed.");
+    if (
+      !Number.isInteger(args.chunkCount) ||
+      args.chunkCount < 1 ||
+      args.chunkCount > MAX_PDF_CHUNKS
+    ) {
+      throw new Error("That PDF is too large — keep it under 4 MB.");
+    }
+
+    return await ctx.db.insert("noteFiles", {
+      userId,
+      title: title.slice(0, 120),
+      mimeType: PDF_MIME,
+      chunkCount: args.chunkCount,
+      bytes: Math.max(0, Math.round(args.bytes)),
+      createdAt: Date.now(),
+    });
+  },
+});
+
+/** Step 2: one slice per call, so no single request gets too large. */
+export const putNoteFileChunk = mutation({
+  args: {
+    fileId: v.id("noteFiles"),
+    index: v.number(),
+    data: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUser(ctx);
+    const file = await ctx.db.get(args.fileId);
+    if (!file) throw new Error("That file no longer exists.");
+    if (file.userId !== userId) throw new Error("Not your file");
+    if (args.index < 0 || args.index >= file.chunkCount) {
+      throw new Error("Chunk out of range");
+    }
+    if (args.data.length > 600_000) {
+      throw new Error("That slice of the file is too large.");
+    }
+    await ctx.db.insert("noteFileChunks", {
+      userId,
+      fileId: args.fileId,
+      index: args.index,
+      data: args.data,
+    });
+  },
+});
+
+export const deleteNoteFile = mutation({
+  args: { id: v.id("noteFiles") },
+  handler: async (ctx, { id }) => {
+    const userId = await requireUser(ctx);
+    const file = await ctx.db.get(id);
+    if (!file) return;
+    if (file.userId !== userId) throw new Error("Not your file");
+    const chunks = await ctx.db
+      .query("noteFileChunks")
+      .withIndex("by_file", (q) => q.eq("fileId", id))
+      .collect();
+    for (const chunk of chunks) await ctx.db.delete(chunk._id);
+    await ctx.db.delete(id);
+  },
+});
+
+export const renameNoteFile = mutation({
+  args: { id: v.id("noteFiles"), title: v.string() },
+  handler: async (ctx, { id, title }) => {
+    const userId = await requireUser(ctx);
+    const file = await ctx.db.get(id);
+    if (!file) return;
+    if (file.userId !== userId) throw new Error("Not your file");
+    const next = title.trim();
+    if (!next) throw new Error("A file needs a title");
+    await ctx.db.patch(id, { title: next.slice(0, 120) });
+  },
+});
+
+export const setNoteFileSummary = mutation({
+  args: {
+    id: v.id("noteFiles"),
+    summary: v.string(),
+    keyPoints: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUser(ctx);
+    const file = await ctx.db.get(args.id);
+    if (!file) return;
+    if (file.userId !== userId) throw new Error("Not your file");
+    await ctx.db.patch(args.id, {
+      summary: args.summary.slice(0, 1200),
+      keyPoints: args.keyPoints
+        .slice(0, 8)
+        .map((point) => point.slice(0, 200)),
+      summarizedAt: Date.now(),
+    });
+  },
+});
+
+/** Reassembled PDF bytes for the AI, ownership-checked. Server-side only. */
+export const noteFileData = query({
+  args: { ids: v.array(v.id("noteFiles")) },
+  handler: async (ctx, { ids }) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const wanted = ids.slice(0, 3);
+    const files = await Promise.all(wanted.map((id) => ctx.db.get(id)));
+    const out: Array<{ title: string; mimeType: string; data: string }> = [];
+    for (const file of files) {
+      if (!file || file.userId !== userId) continue;
+      const chunks = await ctx.db
+        .query("noteFileChunks")
+        .withIndex("by_file", (q) => q.eq("fileId", file._id))
+        .collect();
+      const ordered = chunks.sort((a, b) => a.index - b.index);
+      if (ordered.length !== file.chunkCount) continue; // incomplete upload
+      out.push({
+        title: file.title,
+        mimeType: file.mimeType,
+        data: ordered.map((chunk) => chunk.data).join(""),
+      });
+    }
+    return out;
+  },
+});
+
 /* --------------------------- Notes library --------------------------- */
 
 export const listNotes = query({
