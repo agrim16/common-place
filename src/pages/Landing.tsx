@@ -337,7 +337,7 @@ export default function Landing() {
               Open the book at a clean page.
             </h2>
             <p className="mx-auto mt-5 max-w-xl text-lg leading-8 text-[#f0e6d2]/75">
-              Sign in with Google or your email, set Tuesday&apos;s timetable,
+              Sign in with your email, set Tuesday&apos;s timetable,
               and run your first focus session before the kettle boils.
             </p>
             <a
