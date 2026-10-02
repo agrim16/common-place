@@ -93,6 +93,70 @@ export function levelForXp(xp: number) {
   };
 }
 
+export const ACCEPTED_IMAGE_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/gif",
+  "image/bmp",
+  "image/avif",
+  "image/heic",
+  "image/heif",
+] as const;
+
+export const ACCEPTED_IMAGE_EXTENSIONS =
+  ".png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,.heic,.heif";
+
+function loadImageElement(file: File): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("That image could not be read."));
+    };
+    image.src = url;
+  });
+}
+
+/**
+ * Turn any uploaded image (png, jpg, webp, screenshots…) into a downscaled
+ * base64 JPEG plus a small thumbnail, so a page photo is cheap to store and
+ * still legible to the model.
+ */
+export async function prepareNoteImage(file: File): Promise<{
+  data: string;
+  thumb: string;
+}> {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Only image files can be attached as notes.");
+  }
+  const image = await loadImageElement(file);
+
+  const render = (maxEdge: number, quality: number): string => {
+    const scale = Math.min(
+      1,
+      maxEdge / Math.max(image.width || 1, image.height || 1),
+    );
+    const width = Math.max(1, Math.round((image.width || 1) * scale));
+    const height = Math.max(1, Math.round((image.height || 1) * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("This browser could not process the image.");
+    context.drawImage(image, 0, 0, width, height);
+    return canvas.toDataURL("image/jpeg", quality).split(",")[1] ?? "";
+  };
+
+  return { data: render(1400, 0.72), thumb: render(240, 0.6) };
+}
+
 export function romanNumeral(n: number): string {
   if (n <= 0 || n > 3999) return String(n);
   const map: Array<[number, string]> = [

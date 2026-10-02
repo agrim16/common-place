@@ -3,10 +3,15 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import {
+  ACCEPTED_IMAGE_EXTENSIONS,
+  prepareNoteImage,
+} from "@/lib/study";
 import { useAction, useMutation, useQuery } from "convex/react";
 import {
   BookOpen,
   FileUp,
+  ImageIcon,
   Loader2,
   Send,
   Sparkles,
@@ -34,6 +39,8 @@ export function StudyHelperPanel() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [noteId, setNoteId] = useState<Id<"notes"> | null>(null);
+  const [photoId, setPhotoId] = useState<Id<"noteImages"> | null>(null);
+  const [uploading, setUploading] = useState(false);
   const listEndRef = useRef<HTMLDivElement | null>(null);
 
   // Notes tab state
@@ -42,6 +49,9 @@ export function StudyHelperPanel() {
   const [savingNote, setSavingNote] = useState(false);
 
   const notes = useQuery(api.study.listNotes);
+  const photos = useQuery(api.study.listNoteImages);
+  const createNoteImage = useMutation(api.study.createNoteImage);
+  const removePhoto = useMutation(api.study.deleteNoteImage);
   const ask = useAction(api.ai.askStudyHelper);
   const createNote = useMutation(api.study.createNote);
   const removeNote = useMutation(api.study.deleteNote);
@@ -62,6 +72,7 @@ export function StudyHelperPanel() {
       const result = await ask({
         question,
         noteId: noteId ?? undefined,
+        photoIds: photoId ? [photoId] : undefined,
         history,
       });
       setMessages((prev) => [...prev, { role: "helper", text: result.answer }]);
@@ -94,6 +105,33 @@ export function StudyHelperPanel() {
       toast.error("Could not read that file — try a .txt or .md.");
     }
     event.target.value = "";
+  };
+
+  const handlePhoto = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 20_000_000) {
+      toast.error("That image is too large — keep photos under 20 MB.");
+      return;
+    }
+    setUploading(true);
+    try {
+      const { data, thumb } = await prepareNoteImage(file);
+      await createNoteImage({
+        title: file.name.replace(/\.[^.]+$/, "") || "Photographed notes",
+        mimeType: "image/jpeg",
+        data,
+        thumb,
+      });
+      toast.success(`${file.name} added to the photo library.`);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not read that image.",
+      );
+    } finally {
+      setUploading(false);
+    }
   };
 
   const handleSaveNote = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -144,25 +182,50 @@ export function StudyHelperPanel() {
 
       {tab === "ask" ? (
         <div className="mt-5 flex flex-1 flex-col">
-          {/* Context selector */}
-          {notes && notes.length > 0 && (
-            <label className="block">
+          {/* Context selector */}{notes && notes.length > 0 && (
+              <label className="block">
+                <span className="font-archive text-[10px] text-muted-foreground">
+                  Use a note as context
+                </span>
+                <select
+                  value={noteId ?? ""}
+                  onChange={(e) =>
+                    setNoteId(
+                      e.target.value ? (e.target.value as Id<"notes">) : null,
+                    )
+                  }
+                  className="mt-1 flex h-9 w-full rounded-md border border-input bg-background/80 px-3 text-sm"
+                >
+                  <option value="">No note — general questions</option>
+                  {notes.map((n) => (
+                    <option key={n._id} value={n._id}>
+                      {n.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+          {photos && photos.length > 0 && (
+            <label className="mt-3 block">
               <span className="font-archive text-[10px] text-muted-foreground">
-                Use a note as context
+                Or a photo of your notes
               </span>
               <select
-                value={noteId ?? ""}
+                value={photoId ?? ""}
                 onChange={(e) =>
-                  setNoteId(
-                    e.target.value ? (e.target.value as Id<"notes">) : null,
+                  setPhotoId(
+                    e.target.value
+                      ? (e.target.value as Id<"noteImages">)
+                      : null,
                   )
                 }
                 className="mt-1 flex h-9 w-full rounded-md border border-input bg-background/80 px-3 text-sm"
               >
-                <option value="">No note — general questions</option>
-                {notes.map((n) => (
-                  <option key={n._id} value={n._id}>
-                    {n.title}
+                <option value="">No photo</option>
+                {photos.map((photo) => (
+                  <option key={photo._id} value={photo._id}>
+                    {photo.title}
                   </option>
                 ))}
               </select>
@@ -269,11 +332,91 @@ export function StudyHelperPanel() {
           <p className="font-archive mt-3 text-[9px] leading-5 text-muted-foreground">
             Powered by Gemini · answers use today&apos;s data
             {selectedNote ? " and the selected note" : ""}
+            {photoId ? " and the selected photo" : ""}
           </p>
         </div>
       ) : (
         /* ------------------------------ Notes tab ------------------------------ */
         <div className="mt-5">
+          {/* Photo library */}
+          <div className="rounded-sm border border-dashed border-primary/50 bg-background/50 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-archive flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <ImageIcon className="size-3.5" />
+                Photos of your notes
+              </span>
+              <label className="font-archive inline-flex cursor-pointer items-center gap-1.5 rounded-sm border border-border px-2.5 py-1.5 text-[9px] text-foreground transition-colors hover:border-primary hover:text-primary">
+                {uploading ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <FileUp className="size-3.5" />
+                )}
+                {uploading ? "Preparing…" : "Upload .png / .jpg / .webp"}
+                <input
+                  type="file"
+                  accept={`${ACCEPTED_IMAGE_EXTENSIONS},image/*`}
+                  className="hidden"
+                  onChange={(e) => void handlePhoto(e)}
+                />
+              </label>
+            </div>
+
+            {photos && photos.length > 0 ? (
+              <ul className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {photos.map((photo) => (
+                  <li
+                    key={photo._id}
+                    className={`group relative overflow-hidden rounded-sm border ${
+                      photoId === photo._id
+                        ? "border-primary"
+                        : "border-border"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhotoId(photo._id);
+                        setTab("ask");
+                        toast(`Now asking about “${photo.title}”.`);
+                      }}
+                      className="block w-full text-left"
+                    >
+                      <img
+                        src={`data:image/jpeg;base64,${photo.thumb}`}
+                        alt={photo.title}
+                        className="h-20 w-full object-cover"
+                      />
+                      <span className="block truncate px-2 py-1.5 text-[13px]">
+                        {photo.title}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Delete photo"
+                      onClick={() => {
+                        if (photoId === photo._id) setPhotoId(null);
+                        void removePhoto({ id: photo._id }).catch((error) =>
+                          toast.error(
+                            error instanceof Error
+                              ? error.message
+                              : "Could not delete.",
+                          ),
+                        );
+                      }}
+                      className="absolute top-1 right-1 rounded-sm bg-background/90 p-1.5 text-muted-foreground opacity-0 transition-all hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 text-[15px] italic leading-7 text-muted-foreground">
+                No photos yet. Snap a page of your notebook — the helper reads
+                the handwriting, and the quiz can be set straight from it.
+              </p>
+            )}
+          </div>
           <form
             onSubmit={handleSaveNote}
             className="rounded-sm border border-dashed border-primary/50 bg-background/50 p-4"

@@ -3,7 +3,8 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { api } from "./_generated/api";
-import { action } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
+import { action, type ActionCtx } from "./_generated/server";
 
 const MAX_HISTORY = 8;
 
@@ -162,6 +163,18 @@ async function requireApiKey(): Promise<string> {
   return apiKey;
 }
 
+/** Turn the student's attached photos into Gemini inline image parts. */
+async function photoParts(ctx: ActionCtx, ids: Id<"noteImages">[] | undefined) {
+  if (!ids?.length) return { parts: [], labels: [] };
+  const photos = await ctx.runQuery(api.study.noteImageData, { ids });
+  return {
+    parts: photos.map((photo) => ({
+      inlineData: { mimeType: photo.mimeType, data: photo.data },
+    })),
+    labels: photos.map((photo) => photo.title),
+  };
+}
+
 /**
  * The study helper: a Gemini-backed tutor that can see the student's day —
  * today's focus minutes, timetable, open reminders and optionally an uploaded
@@ -171,6 +184,7 @@ export const askStudyHelper = action({
   args: {
     question: v.string(),
     noteId: v.optional(v.id("notes")),
+    photoIds: v.optional(v.array(v.id("noteImages"))),
     history: v.array(
       v.object({
         role: v.union(v.literal("user"), v.literal("model")),
@@ -190,12 +204,13 @@ export const askStudyHelper = action({
     const context = await ctx.runQuery(api.study.helperContext, {
       noteId: args.noteId,
     });
+    const photos = await photoParts(ctx, args.photoIds);
 
     const system = [
       "You are the study helper inside Commonplace, a study desk for students.",
       "Be warm, concise and practical: short paragraphs, no filler, no markdown tables.",
       "Ground answers about progress in the student data below; if asked about progress, quote the actual numbers.",
-      "If a note is attached, treat it as the student's own study material.",
+      "If a note or any attached photo is given, treat it as the student's own study material — read handwriting and diagrams as best you can and say so if a photo is unclear.",
       "You help with study planning, revision techniques, explanations and motivation — nothing else.",
       "",
       `Student data (JSON): ${JSON.stringify(context)}`,
@@ -210,7 +225,20 @@ export const askStudyHelper = action({
             role: message.role,
             parts: [{ text: message.text.slice(0, 2000) }],
           })),
-        { role: "user" as const, parts: [{ text: question.slice(0, 4000) }] },
+        {
+          role: "user" as const,
+          parts: [
+            { text: question.slice(0, 4000) },
+            ...(photos.parts.length > 0
+              ? [
+                  {
+                    text: `Attached photos of the student's own notes: ${photos.labels.join(", ")}.`,
+                  },
+                  ...photos.parts,
+                ]
+              : []),
+          ],
+        },
       ],
       generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
     };
@@ -289,6 +317,7 @@ export const generateQuiz = action({
     topic: v.string(),
     count: v.optional(v.number()),
     noteId: v.optional(v.id("notes")),
+    photoIds: v.optional(v.array(v.id("noteImages"))),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -304,9 +333,18 @@ export const generateQuiz = action({
       noteId: args.noteId,
     }) : null;
 
-    const source = note
-      ? `Write the quiz from the student's own note, titled “${note.title}”:\n"""\n${note.body.slice(0, 8000)}\n"""`
-      : "Write the quiz from your own knowledge of the topic.";
+    const photos = await photoParts(ctx, args.photoIds);
+
+    const source = [
+      note
+        ? `Write the quiz from the student's own note, titled “${note.title}”:\n"""\n${note.body.slice(0, 8000)}\n"""`
+        : "Write the quiz from your own knowledge of the topic.",
+      ...(photos.parts.length > 0
+        ? [
+            `Also use the attached photos of the student's handwritten notes (${photos.labels.join(", ")}) as source material — transcribe them before writing questions.`,
+          ]
+        : []),
+    ].join("\n");
 
     const prompt = [
       `Set a ${count}-question multiple-choice quiz on: ${topic.slice(0, 200)}.`,
@@ -322,7 +360,12 @@ export const generateQuiz = action({
     ].join("\n");
 
     const payload = {
-      contents: [{ role: "user" as const, parts: [{ text: prompt }] }],
+      contents: [
+        {
+          role: "user" as const,
+          parts: [{ text: prompt }, ...photos.parts],
+        },
+      ],
       generationConfig: {
         temperature: 0.6,
         maxOutputTokens: Math.min(8192, 800 + count * 320),

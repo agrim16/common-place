@@ -63,6 +63,16 @@ const schema = defineSchema(
     }).index("by_user_startedAt", ["userId", "startedAt"])
       .index("by_startedAt", ["startedAt"]),
 
+    // Study desk: photos of handwritten notes, downscaled on the client
+    noteImages: defineTable({
+      userId: v.id("users"),
+      title: v.string(),
+      mimeType: v.string(), // always image/jpeg after downscaling
+      data: v.string(), // base64, no data: prefix
+      thumb: v.string(), // small base64 preview for the library list
+      createdAt: v.number(),
+    }).index("by_user", ["userId"]),
+
     // Study desk: AI quiz attempts, kept for the student's own record
     quizAttempts: defineTable({
       userId: v.id("users"),

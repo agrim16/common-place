@@ -2,9 +2,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/convex/_generated/api";
+import {
+  ACCEPTED_IMAGE_EXTENSIONS,
+  prepareNoteImage,
+} from "@/lib/study";
 import type { Id } from "@/convex/_generated/dataModel";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { Check, Loader2, RotateCcw, Sparkles, X } from "lucide-react";
+import { Check, FileUp, Loader2, RotateCcw, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -43,6 +47,7 @@ export function QuizPanel() {
     MAX_QUESTIONS,
   );
   const [noteId, setNoteId] = useState<Id<"notes"> | null>(null);
+  const [photoId, setPhotoId] = useState<Id<"noteImages"> | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [questions, setQuestions] = useState<Question[] | null>(null);
@@ -53,6 +58,8 @@ export function QuizPanel() {
   const [finished, setFinished] = useState(false);
 
   const notes = useQuery(api.study.listNotes);
+  const photos = useQuery(api.study.listNoteImages);
+  const createNoteImage = useMutation(api.study.createNoteImage);
   const attempts = useQuery(api.study.listQuizAttempts) ?? NO_ATTEMPTS;
   const generate = useAction(api.ai.generateQuiz);
   const record = useMutation(api.study.recordQuizAttempt);
@@ -92,6 +99,7 @@ export function QuizPanel() {
         topic: trimmed,
         count: questionCount,
         noteId: noteId ?? undefined,
+        photoIds: photoId ? [photoId] : undefined,
       });
       setQuestions(result.questions);
       setQuizTopic(result.topic);
@@ -113,6 +121,34 @@ export function QuizPanel() {
     setQuestions(null);
     setPicked(null);
     setFinished(false);
+  };
+
+  const handlePhoto = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 20_000_000) {
+      toast.error("That image is too large — keep photos under 20 MB.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { data, thumb } = await prepareNoteImage(file);
+      const id = await createNoteImage({
+        title: file.name.replace(/\.[^.]+$/, "") || "Photographed notes",
+        mimeType: "image/jpeg",
+        data,
+        thumb,
+      });
+      setPhotoId(id);
+      toast.success(`${file.name} attached — the quiz will use it.`);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not read that image.",
+      );
+    } finally {
+      setBusy(false);
+    }
   };
 
   const choose = (optionIndex: number) => {
@@ -199,6 +235,50 @@ export function QuizPanel() {
               </select>
             </div>
           )}
+
+          <div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-archive text-[10px] text-muted-foreground">
+                  Or question a photo of your notes
+                </span>
+                <label className="font-archive inline-flex cursor-pointer items-center gap-1.5 rounded-sm border border-border px-2.5 py-1.5 text-[9px] text-foreground transition-colors hover:border-primary hover:text-primary">
+                  {busy ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <FileUp className="size-3.5" />
+                  )}
+                  {busy ? "Preparing…" : "Upload image"}
+                  <input
+                    type="file"
+                    accept={`${ACCEPTED_IMAGE_EXTENSIONS},image/*`}
+                    className="hidden"
+                    onChange={(e) => void handlePhoto(e)}
+                  />
+                </label>
+              </div>
+              {photos && photos.length > 0 && (
+                <select
+                  value={photoId ?? ""}
+                  onChange={(e) =>
+                    setPhotoId(
+                      e.target.value
+                        ? (e.target.value as Id<"noteImages">)
+                        : null,
+                    )
+                  }
+                  disabled={busy}
+                  aria-label="Photo to quiz from"
+                  className="mt-1.5 flex h-9 w-full rounded-md border border-input bg-background/80 px-3 text-sm"
+                >
+                  <option value="">No photo</option>
+                  {photos.map((photo) => (
+                    <option key={photo._id} value={photo._id}>
+                      {photo.title}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
 
           <div>
             <label

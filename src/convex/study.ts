@@ -281,6 +281,91 @@ export const listQuizAttempts = query({
   },
 });
 
+/* ---------------------------- Note photos ---------------------------- */
+
+const PHOTO_MIME = "image/jpeg";
+const MAX_PHOTO_CHARS = 800_000; // ~600 KB once decoded
+
+/** Photo library — thumbnails only, never the full base64 payload. */
+export const listNoteImages = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const photos = await ctx.db
+      .query("noteImages")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    return photos
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map(({ _id, title, thumb, createdAt }) => ({
+        _id,
+        title,
+        thumb,
+        createdAt,
+      }));
+  },
+});
+
+export const createNoteImage = mutation({
+  args: {
+    title: v.string(),
+    mimeType: v.string(),
+    data: v.string(),
+    thumb: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUser(ctx);
+    const title = args.title.trim();
+    if (!title) throw new Error("Give the photo a title");
+    if (args.mimeType !== PHOTO_MIME) {
+      throw new Error("Photos are stored as JPEG.");
+    }
+    if (!args.data || args.data.length > MAX_PHOTO_CHARS) {
+      throw new Error("That photo is too large — try a smaller one.");
+    }
+    return await ctx.db.insert("noteImages", {
+      userId,
+      title: title.slice(0, 120),
+      mimeType: PHOTO_MIME,
+      data: args.data,
+      thumb: args.thumb.slice(0, 120_000),
+      createdAt: Date.now(),
+    });
+  },
+});
+
+export const deleteNoteImage = mutation({
+  args: { id: v.id("noteImages") },
+  handler: async (ctx, { id }) => {
+    const userId = await requireUser(ctx);
+    const photo = await ctx.db.get(id);
+    if (!photo) return;
+    if (photo.userId !== userId) throw new Error("Not your photo");
+    await ctx.db.delete(id);
+  },
+});
+
+/** Full image data for the AI, ownership-checked. Server-side only. */
+export const noteImageData = query({
+  args: { ids: v.array(v.id("noteImages")) },
+  handler: async (ctx, { ids }) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const photos = await Promise.all(ids.slice(0, 4).map((id) => ctx.db.get(id)));
+    return photos
+      .filter(
+        (photo): photo is NonNullable<typeof photo> =>
+          !!photo && photo.userId === userId,
+      )
+      .map((photo) => ({
+        title: photo.title,
+        mimeType: photo.mimeType,
+        data: photo.data,
+      }));
+  },
+});
+
 /* --------------------------- Notes library --------------------------- */
 
 export const listNotes = query({
