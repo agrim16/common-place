@@ -70,6 +70,9 @@ const schema = defineSchema(
       mimeType: v.string(), // always image/jpeg after downscaling
       data: v.string(), // base64, no data: prefix
       thumb: v.string(), // small base64 preview for the library list
+      summary: v.optional(v.string()), // what the AI read off the page
+      keyPoints: v.optional(v.array(v.string())),
+      summarizedAt: v.optional(v.number()),
       createdAt: v.number(),
     }).index("by_user", ["userId"]),
 

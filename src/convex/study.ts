@@ -298,10 +298,12 @@ export const listNoteImages = query({
       .collect();
     return photos
       .sort((a, b) => b.createdAt - a.createdAt)
-      .map(({ _id, title, thumb, createdAt }) => ({
+      .map(({ _id, title, thumb, summary, keyPoints, createdAt }) => ({
         _id,
         title,
         thumb,
+        summary,
+        keyPoints,
         createdAt,
       }));
   },
@@ -343,6 +345,39 @@ export const deleteNoteImage = mutation({
     if (!photo) return;
     if (photo.userId !== userId) throw new Error("Not your photo");
     await ctx.db.delete(id);
+  },
+});
+
+export const renameNoteImage = mutation({
+  args: { id: v.id("noteImages"), title: v.string() },
+  handler: async (ctx, { id, title }) => {
+    const userId = await requireUser(ctx);
+    const photo = await ctx.db.get(id);
+    if (!photo) return;
+    if (photo.userId !== userId) throw new Error("Not your photo");
+    const next = title.trim();
+    if (!next) throw new Error("A photo needs a title");
+    await ctx.db.patch(id, { title: next.slice(0, 120) });
+  },
+});
+
+/** What the AI read off a photographed page. */
+export const setNoteImageSummary = mutation({
+  args: {
+    id: v.id("noteImages"),
+    summary: v.string(),
+    keyPoints: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUser(ctx);
+    const photo = await ctx.db.get(args.id);
+    if (!photo) return;
+    if (photo.userId !== userId) throw new Error("Not your photo");
+    await ctx.db.patch(args.id, {
+      summary: args.summary.slice(0, 1200),
+      keyPoints: args.keyPoints.slice(0, 8).map((point) => point.slice(0, 200)),
+      summarizedAt: Date.now(),
+    });
   },
 });
 
@@ -406,6 +441,19 @@ export const deleteNote = mutation({
     if (!note) return;
     if (note.userId !== userId) throw new Error("Not your note");
     await ctx.db.delete(id);
+  },
+});
+
+export const renameNote = mutation({
+  args: { id: v.id("notes"), title: v.string() },
+  handler: async (ctx, { id, title }) => {
+    const userId = await requireUser(ctx);
+    const note = await ctx.db.get(id);
+    if (!note) return;
+    if (note.userId !== userId) throw new Error("Not your note");
+    const next = title.trim();
+    if (!next) throw new Error("A note needs a title");
+    await ctx.db.patch(id, { title: next.slice(0, 120) });
   },
 });
 

@@ -60,6 +60,7 @@ export function QuizPanel() {
   const notes = useQuery(api.study.listNotes);
   const photos = useQuery(api.study.listNoteImages);
   const createNoteImage = useMutation(api.study.createNoteImage);
+  const summarise = useAction(api.ai.summarizePhoto);
   const attempts = useQuery(api.study.listQuizAttempts) ?? NO_ATTEMPTS;
   const generate = useAction(api.ai.generateQuiz);
   const record = useMutation(api.study.recordQuizAttempt);
@@ -142,6 +143,9 @@ export function QuizPanel() {
       });
       setPhotoId(id);
       toast.success(`${file.name} attached — the quiz will use it.`);
+      void summarise({ imageId: id }).catch(() =>
+        toast("The page was attached, but it could not be summarised."),
+      );
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Could not read that image.",

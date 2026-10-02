@@ -309,6 +309,65 @@ function normaliseQuestions(raw: unknown, wanted: number): QuizQuestion[] {
 }
 
 /**
+ * Read a photographed page: transcribe what is there, then summarise it into
+ * the notes the student can rename and study from.
+ */
+export const summarizePhoto = action({
+  args: { imageId: v.id("noteImages") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to use your notes.");
+
+    const photos = await ctx.runQuery(api.study.noteImageData, {
+      ids: [args.imageId],
+    });
+    const photo = photos[0];
+    if (!photo) throw new Error("That photo isn't yours.");
+
+    const apiKey = await requireApiKey();
+    const attached = await photoParts(ctx, [args.imageId]);
+
+    const prompt = [
+      "You are reading a photograph of a student's notebook page.",
+      "Transcribe the page faithfully first — handwriting, headings, lists, diagrams described in words.",
+      "Then summarise it for revision.",
+      "",
+      'Reply with JSON only: {"summary":"3-6 sentences on what this page covers","keyPoints":["5-8 short bullet points of the actual content"],"subject":"the single subject or topic this page belongs to"}',
+      "If the photo is too blurred or cropped to read, say so in the summary and return no key points.",
+    ].join("\n");
+
+    const payload = {
+      contents: [
+        {
+          role: "user" as const,
+          parts: [{ text: prompt }, ...attached.parts],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 2048,
+        responseMimeType: "application/json",
+      },
+    };
+
+    const { text, model } = await generateText(apiKey, payload);
+    const parsed = extractJson(text);
+    const summary = asString(parsed.summary) || "No summary could be read.";
+    const keyPoints = Array.isArray(parsed.keyPoints)
+      ? parsed.keyPoints.map(asString).filter(Boolean)
+      : [];
+
+    await ctx.runMutation(api.study.setNoteImageSummary, {
+      id: args.imageId,
+      summary,
+      keyPoints,
+    });
+
+    return { summary, keyPoints, model, userId };
+  },
+});
+
+/**
  * Build a multiple-choice quiz on any topic with Gemini. When the student picks
  * a note, the quiz is written from that note's own material.
  */

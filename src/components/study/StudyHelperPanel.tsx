@@ -10,9 +10,11 @@ import {
 import { useAction, useMutation, useQuery } from "convex/react";
 import {
   BookOpen,
+  Check,
   FileUp,
   ImageIcon,
   Loader2,
+  Pencil,
   Send,
   Sparkles,
   Trash2,
@@ -41,6 +43,9 @@ export function StudyHelperPanel() {
   const [noteId, setNoteId] = useState<Id<"notes"> | null>(null);
   const [photoId, setPhotoId] = useState<Id<"noteImages"> | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [summarisingId, setSummarisingId] = useState<string | null>(null);
   const listEndRef = useRef<HTMLDivElement | null>(null);
 
   // Notes tab state
@@ -52,6 +57,9 @@ export function StudyHelperPanel() {
   const photos = useQuery(api.study.listNoteImages);
   const createNoteImage = useMutation(api.study.createNoteImage);
   const removePhoto = useMutation(api.study.deleteNoteImage);
+  const renamePhoto = useMutation(api.study.renameNoteImage);
+  const renameNoteMutation = useMutation(api.study.renameNote);
+  const summarise = useAction(api.ai.summarizePhoto);
   const ask = useAction(api.ai.askStudyHelper);
   const createNote = useMutation(api.study.createNote);
   const removeNote = useMutation(api.study.deleteNote);
@@ -107,6 +115,50 @@ export function StudyHelperPanel() {
     event.target.value = "";
   };
 
+  const runSummary = async (id: Id<"noteImages">, name: string) => {
+    setSummarisingId(id);
+    try {
+      const result = await summarise({ imageId: id });
+      toast.success(`“${name}” summarised.`, {
+        description: result.summary.slice(0, 140),
+      });
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "That page could not be summarised.",
+      );
+    } finally {
+      setSummarisingId(null);
+    }
+  };
+
+  const startRename = (id: string, title: string) => {
+    setRenamingId(id);
+    setRenameValue(title);
+  };
+
+  const commitRename = async (
+    kind: "photo" | "note",
+    id: Id<"noteImages"> | Id<"notes">,
+  ) => {
+    const title = renameValue.trim();
+    setRenamingId(null);
+    if (!title) return;
+    try {
+      if (kind === "photo") {
+        await renamePhoto({ id: id as Id<"noteImages">, title });
+      } else {
+        await renameNoteMutation({ id: id as Id<"notes">, title });
+      }
+      toast.success("Renamed.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not rename.",
+      );
+    }
+  };
+
   const handlePhoto = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -118,13 +170,14 @@ export function StudyHelperPanel() {
     setUploading(true);
     try {
       const { data, thumb } = await prepareNoteImage(file);
-      await createNoteImage({
+      const id = await createNoteImage({
         title: file.name.replace(/\.[^.]+$/, "") || "Photographed notes",
         mimeType: "image/jpeg",
         data,
         thumb,
       });
-      toast.success(`${file.name} added to the photo library.`);
+      toast.success(`${file.name} added — reading it now…`);
+      void runSummary(id, file.name);
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Could not read that image.",
@@ -386,27 +439,93 @@ export function StudyHelperPanel() {
                         alt={photo.title}
                         className="h-20 w-full object-cover"
                       />
-                      <span className="block truncate px-2 py-1.5 text-[13px]">
-                        {photo.title}
-                      </span>
                     </button>
-                    <button
-                      type="button"
-                      aria-label="Delete photo"
-                      onClick={() => {
-                        if (photoId === photo._id) setPhotoId(null);
-                        void removePhoto({ id: photo._id }).catch((error) =>
-                          toast.error(
-                            error instanceof Error
-                              ? error.message
-                              : "Could not delete.",
-                          ),
-                        );
-                      }}
-                      className="absolute top-1 right-1 rounded-sm bg-background/90 p-1.5 text-muted-foreground opacity-0 transition-all hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
+
+                    <div className="px-2 py-1.5">
+                      {renamingId === photo._id ? (
+                        <div className="flex items-center gap-1">
+                          <input
+                            autoFocus
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter")
+                                void commitRename("photo", photo._id);
+                              if (e.key === "Escape") setRenamingId(null);
+                            }}
+                            maxLength={120}
+                            aria-label="Photo title"
+                            className="w-full rounded-sm border border-input bg-background px-1.5 py-1 text-[13px]"
+                          />
+                          <button
+                            type="button"
+                            aria-label="Save name"
+                            onClick={() =>
+                              void commitRename("photo", photo._id)
+                            }
+                            className="shrink-0 text-primary"
+                          >
+                            <Check className="size-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="block truncate text-[13px]">
+                          {photo.title}
+                        </span>
+                      )}
+
+                      {summarisingId === photo._id ? (
+                        <span className="font-archive mt-1 flex items-center gap-1 text-[9px] text-muted-foreground">
+                          <Loader2 className="size-3 animate-spin" />
+                          Reading the page…
+                        </span>
+                      ) : photo.summary ? (
+                        <p
+                          title={photo.summary}
+                          className="mt-1 line-clamp-2 text-[11px] leading-4 italic text-muted-foreground"
+                        >
+                          {photo.summary}
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="absolute top-1 right-1 flex gap-1 opacity-0 transition-all group-hover:opacity-100 focus-within:opacity-100">
+                      <button
+                        type="button"
+                        aria-label="Rename photo"
+                        onClick={() => startRename(photo._id, photo.title)}
+                        className="rounded-sm bg-background/90 p-1.5 text-muted-foreground hover:text-primary"
+                      >
+                        <Pencil className="size-3.5" />
+                      </button>
+                      {!photo.summary && (
+                        <button
+                          type="button"
+                          aria-label="Summarise photo"
+                          onClick={() => void runSummary(photo._id, photo.title)}
+                          className="rounded-sm bg-background/90 p-1.5 text-muted-foreground hover:text-primary"
+                        >
+                          <Sparkles className="size-3.5" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        aria-label="Delete photo"
+                        onClick={() => {
+                          if (photoId === photo._id) setPhotoId(null);
+                          void removePhoto({ id: photo._id }).catch((error) =>
+                            toast.error(
+                              error instanceof Error
+                                ? error.message
+                                : "Could not delete.",
+                            ),
+                          );
+                        }}
+                        className="rounded-sm bg-background/90 p-1.5 text-muted-foreground hover:text-destructive"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -476,9 +595,35 @@ export function StudyHelperPanel() {
                     }`}
                   />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[16px] font-medium">
-                      {note.title}
-                    </p>
+                    {renamingId === note._id ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          autoFocus
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter")
+                              void commitRename("note", note._id);
+                            if (e.key === "Escape") setRenamingId(null);
+                          }}
+                          maxLength={120}
+                          aria-label="Note title"
+                          className="w-full rounded-sm border border-input bg-background px-2 py-1 text-[15px]"
+                        />
+                        <button
+                          type="button"
+                          aria-label="Save name"
+                          onClick={() => void commitRename("note", note._id)}
+                          className="shrink-0 text-primary"
+                        >
+                          <Check className="size-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="truncate text-[16px] font-medium">
+                        {note.title}
+                      </p>
+                    )}
                     <p className="truncate text-sm italic text-muted-foreground">
                       {note.body.slice(0, 90)}
                     </p>
@@ -493,10 +638,17 @@ export function StudyHelperPanel() {
                     >
                       Ask the helper about this →
                     </button>
-                  </div>
-                  <button
-                    type="button"
-                    aria-label="Delete note"
+                  </div><button
+                      type="button"
+                      aria-label="Rename note"
+                      onClick={() => startRename(note._id, note.title)}
+                      className="shrink-0 rounded-sm p-1.5 text-muted-foreground opacity-0 transition-all hover:text-primary focus-visible:opacity-100 group-hover:opacity-100"
+                    >
+                      <Pencil className="size-4" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Delete note"
                     onClick={() =>
                       void removeNote({ id: note._id }).catch((error) =>
                         toast.error(
