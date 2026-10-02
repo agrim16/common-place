@@ -298,14 +298,29 @@ export const listNoteImages = query({
       .collect();
     return photos
       .sort((a, b) => b.createdAt - a.createdAt)
-      .map(({ _id, title, thumb, summary, keyPoints, createdAt }) => ({
-        _id,
-        title,
-        thumb,
-        summary,
-        keyPoints,
-        createdAt,
-      }));
+      .map(
+        ({
+          _id,
+          title,
+          thumb,
+          summary,
+          keyPoints,
+          keyTerms,
+          warnings,
+          suggestedTitle,
+          createdAt,
+        }) => ({
+          _id,
+          title,
+          thumb,
+          summary,
+          keyPoints,
+          keyTerms,
+          warnings,
+          suggestedTitle,
+          createdAt,
+        }),
+      );
   },
 });
 
@@ -366,7 +381,11 @@ export const setNoteImageSummary = mutation({
   args: {
     id: v.id("noteImages"),
     summary: v.string(),
+    transcript: v.optional(v.string()),
     keyPoints: v.array(v.string()),
+    keyTerms: v.optional(v.array(v.string())),
+    warnings: v.optional(v.array(v.string())),
+    suggestedTitle: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const userId = await requireUser(ctx);
@@ -375,9 +394,31 @@ export const setNoteImageSummary = mutation({
     if (photo.userId !== userId) throw new Error("Not your photo");
     await ctx.db.patch(args.id, {
       summary: args.summary.slice(0, 1200),
-      keyPoints: args.keyPoints.slice(0, 8).map((point) => point.slice(0, 200)),
+      transcript: args.transcript?.slice(0, 12_000),
+      keyPoints: args.keyPoints.slice(0, 10).map((point) => point.slice(0, 240)),
+      keyTerms: (args.keyTerms ?? []).slice(0, 12).map((t) => t.slice(0, 80)),
+      warnings: (args.warnings ?? []).slice(0, 5).map((w) => w.slice(0, 200)),
+      suggestedTitle: args.suggestedTitle?.slice(0, 120),
       summarizedAt: Date.now(),
     });
+  },
+});
+
+/** Stored transcriptions of the student's photos — text beats re-reading. */
+export const noteImageTranscripts = query({
+  args: { ids: v.array(v.id("noteImages")) },
+  handler: async (ctx, { ids }) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const photos = await Promise.all(ids.slice(0, 4).map((id) => ctx.db.get(id)));
+    return photos
+      .filter((photo): photo is NonNullable<typeof photo> => !!photo)
+      .filter((photo) => photo.userId === userId)
+      .map((photo) => ({
+        _id: photo._id,
+        title: photo.title,
+        transcript: photo.transcript,
+      }));
   },
 });
 
@@ -418,15 +459,31 @@ export const listNoteFiles = query({
       .collect();
     return files
       .sort((a, b) => b.createdAt - a.createdAt)
-      .map(({ _id, title, mimeType, bytes, summary, keyPoints, createdAt }) => ({
-        _id,
-        title,
-        mimeType,
-        bytes,
-        summary,
-        keyPoints,
-        createdAt,
-      }));
+      .map(
+        ({
+          _id,
+          title,
+          mimeType,
+          bytes,
+          summary,
+          keyPoints,
+          keyTerms,
+          warnings,
+          suggestedTitle,
+          createdAt,
+        }) => ({
+          _id,
+          title,
+          mimeType,
+          bytes,
+          summary,
+          keyPoints,
+          keyTerms,
+          warnings,
+          suggestedTitle,
+          createdAt,
+        }),
+      );
   },
 });
 
@@ -512,7 +569,11 @@ export const setNoteFileSummary = mutation({
   args: {
     id: v.id("noteFiles"),
     summary: v.string(),
+    transcript: v.optional(v.string()),
     keyPoints: v.array(v.string()),
+    keyTerms: v.optional(v.array(v.string())),
+    warnings: v.optional(v.array(v.string())),
+    suggestedTitle: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const userId = await requireUser(ctx);
@@ -521,9 +582,11 @@ export const setNoteFileSummary = mutation({
     if (file.userId !== userId) throw new Error("Not your file");
     await ctx.db.patch(args.id, {
       summary: args.summary.slice(0, 1200),
-      keyPoints: args.keyPoints
-        .slice(0, 8)
-        .map((point) => point.slice(0, 200)),
+      transcript: args.transcript?.slice(0, 12_000),
+      keyPoints: args.keyPoints.slice(0, 10).map((point) => point.slice(0, 240)),
+      keyTerms: (args.keyTerms ?? []).slice(0, 12).map((t) => t.slice(0, 80)),
+      warnings: (args.warnings ?? []).slice(0, 5).map((w) => w.slice(0, 200)),
+      suggestedTitle: args.suggestedTitle?.slice(0, 120),
       summarizedAt: Date.now(),
     });
   },
@@ -547,6 +610,7 @@ export const noteFileSource = query({
         mimeType: file.mimeType,
         storageId: file.storageId,
         bytes: file.bytes,
+        transcript: file.transcript,
       }));
   },
 });

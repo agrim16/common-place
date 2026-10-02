@@ -21,6 +21,18 @@ const CANDIDATE_MODELS = [
   "gemini-3.1-flash-lite",
 ].filter((model): model is string => Boolean(model));
 
+/**
+ * Reading a page or a document is the hardest thing we ask Gemini to do, so it
+ * gets first refusal on a stronger model when the key has one. Set
+ * GEMINI_READ_MODEL to pin it; otherwise we just try before falling back.
+ */
+const READ_MODEL_CANDIDATES = [
+  process.env.GEMINI_READ_MODEL,
+  "gemini-3.1-pro-preview",
+  "gemini-pro-latest",
+  ...CANDIDATE_MODELS,
+].filter((model): model is string => Boolean(model));
+
 type Attempt =
   | { kind: "ok"; answer: string }
   | { kind: "missing" } // model unavailable for this key — try the next one
@@ -95,6 +107,7 @@ async function discoverModel(apiKey: string): Promise<string | null> {
       .map((m) => String(m.name ?? "").replace(/^models\//, ""))
       .filter(Boolean);
     const picked =
+      names.find((n) => n.includes("pro") && !n.startsWith("gemini-2.5")) ??
       names.find((n) => n.includes("flash") && !n.startsWith("gemini-2.5")) ??
       names.find((n) => n.includes("flash")) ??
       names[0] ??
@@ -110,13 +123,14 @@ async function discoverModel(apiKey: string): Promise<string | null> {
 /**
  * Run a payload through the candidate models: preferred models first, model
  * discovery appended on the second pass, 503s retried. Shared by the study
- * helper and the quiz generator.
+ * helper, the quiz generator and the reading desk.
  */
 async function generateText(
   apiKey: string,
   payload: unknown,
+  preferred: string[] = CANDIDATE_MODELS,
 ): Promise<{ text: string; model: string }> {
-  const candidates = [...CANDIDATE_MODELS];
+  const candidates = [...preferred];
   let busyRetries = 0;
 
   for (let pass = 0; pass < 3; pass++) {
@@ -169,7 +183,216 @@ async function requireApiKey(): Promise<string> {
   return apiKey;
 }
 
-/** Turn the student's attached photos into Gemini inline image parts. */
+/* ----------------------------- Reading desk ----------------------------- */
+
+/**
+ * A real response schema — rather than "please reply with JSON" — is what
+ * stops the model drifting into prose or wrapping its answer in code fences.
+ */
+const READING_SCHEMA = {
+  type: "object",
+  properties: {
+    suggestedTitle: {
+      type: "string",
+      description:
+        "A short, specific title of at most 6 words, as a teacher would name it.",
+    },
+    subject: {
+      type: "string",
+      description: "The single subject this belongs to, e.g. 'Biology'.",
+    },
+    transcript: {
+      type: "string",
+      description:
+        "A faithful transcription of everything legible, in reading order. Write [illegible] rather than guessing.",
+    },
+    summary: {
+      type: "string",
+      description:
+        "4-6 sentences on what this material covers, written for the student who owns it.",
+    },
+    keyPoints: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "6-10 examinable facts taken only from this material. No filler, no generic study advice.",
+    },
+    keyTerms: {
+      type: "array",
+      items: { type: "string" },
+      description: "Up to 12 defined terms in 'term — definition' form.",
+    },
+    warnings: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Empty unless something is genuinely unreadable. Say exactly what, e.g. 'Bottom-left diagram is cropped out of frame'.",
+    },
+  },
+  required: [
+    "suggestedTitle",
+    "subject",
+    "transcript",
+    "summary",
+    "keyPoints",
+    "keyTerms",
+    "warnings",
+  ],
+} as const;
+
+const SYSTEM_FOR_READING = [
+  "You are the reading desk inside Commonplace, a study app for students.",
+  "You read photographs of handwritten notes and PDF documents, then turn them into usable revision material.",
+  "Rules you never break:",
+  "- Transcribe before you summarise. If you cannot read something, write [illegible] and add a warning.",
+  "- Never invent content that is not there. An honest gap beats a confident guess.",
+  "- Prefer the student's own vocabulary and structure over your own phrasing.",
+  "- Describe diagrams in words — what is plotted, what the axes are, what the shape shows.",
+].join("\n");
+
+type Reading = {
+  model: string;
+  subject: string;
+  suggestedTitle: string;
+  transcript: string;
+  summary: string;
+  keyPoints: string[];
+  keyTerms: string[];
+  warnings: string[];
+};
+
+/** Schema-locked, low-temperature read. */
+async function readMaterial(
+  ctx: ActionCtx,
+  apiKey: string,
+  prompt: string,
+  parts: unknown[],
+): Promise<Reading> {
+  const payload = {
+    systemInstruction: { parts: [{ text: SYSTEM_FOR_READING }] },
+    contents: [{ role: "user" as const, parts: [{ text: prompt }, ...parts] }],
+    generationConfig: {
+      temperature: 0.2,
+      topP: 0.9,
+      maxOutputTokens: 4096,
+      responseMimeType: "application/json",
+      responseSchema: READING_SCHEMA,
+    },
+  };
+  const { text, model } = await generateText(
+    apiKey,
+    payload,
+    READ_MODEL_CANDIDATES,
+  );
+  const parsed = extractJson(text);
+  return {
+    model,
+    subject: asString(parsed.subject),
+    suggestedTitle: asString(parsed.suggestedTitle),
+    transcript: asString(parsed.transcript),
+    summary: asString(parsed.summary),
+    keyPoints: stringList(parsed.keyPoints, 10),
+    keyTerms: stringList(parsed.keyTerms, 12),
+    warnings: stringList(parsed.warnings, 5),
+  };
+}
+
+function stringList(value: unknown, limit: number): string[] {
+  return Array.isArray(value)
+    ? value.map(asString).filter(Boolean).slice(0, limit)
+    : [];
+}
+
+/**
+ * Read a photographed page: transcribe it, summarise it, and suggest a real
+ * name for it. The transcript is stored so later quizzes and questions never
+ * have to re-read the handwriting.
+ */
+export const summarizePhoto = action({
+  args: { imageId: v.id("noteImages") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to use your notes.");
+
+    const photos = await ctx.runQuery(api.study.noteImageData, {
+      ids: [args.imageId],
+    });
+    const photo = photos[0];
+    if (!photo) throw new Error("That photo isn't yours.");
+
+    const apiKey = await requireApiKey();
+    const attached = await photoParts(ctx, [args.imageId]);
+
+    const prompt = [
+      "Read this photograph of a student's notebook page.",
+      "It is a single page, so be exhaustive: every heading, list, diagram label and margin note that is legible.",
+      `The student filed it as "${photo.title}", which is usually a camera filename — so propose a real title.`,
+      "Put anything unreadable in `warnings` and mark it [illegible] in the transcript.",
+    ].join("\n");
+
+    const read = await readMaterial(ctx, apiKey, prompt, attached.parts);
+
+    await ctx.runMutation(api.study.setNoteImageSummary, {
+      id: args.imageId,
+      summary: read.summary || "Nothing on this page could be read.",
+      transcript: read.transcript,
+      keyPoints: read.keyPoints,
+      keyTerms: read.keyTerms,
+      warnings: read.warnings,
+      suggestedTitle: read.suggestedTitle,
+    });
+
+    return { ...read, userId };
+  },
+});
+
+/** Read an uploaded PDF the same way, from the bytes in file storage. */
+export const summarizeFile = action({
+  args: { fileId: v.id("noteFiles") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to use your notes.");
+
+    const files = await ctx.runQuery(api.study.noteFileSource, {
+      ids: [args.fileId],
+    });
+    const file = files[0];
+    if (!file) throw new Error("That file isn't yours.");
+    if (file.bytes > MAX_INLINE_PDF_BYTES) {
+      throw new Error(
+        "That PDF is too large for the AI to read at once — try an under-14 MB copy.",
+      );
+    }
+
+    const apiKey = await requireApiKey();
+    const attached = await fileParts(ctx, [args.fileId]);
+
+    const prompt = [
+      `Read this PDF from a student's library, filed as "${file.title}".`,
+      "Work through it in order and keep the document's own structure.",
+      `The student filed it as "${file.title}", which may be a filename rather than a real title — so propose a real one.`,
+      "If the PDF is a scan with no readable text layer, say so in `warnings` and leave the transcript empty rather than inventing one.",
+    ].join("\n");
+
+    const read = await readMaterial(ctx, apiKey, prompt, attached.parts);
+
+    await ctx.runMutation(api.study.setNoteFileSummary, {
+      id: args.fileId,
+      summary: read.summary || "Nothing in this document could be read.",
+      transcript: read.transcript,
+      keyPoints: read.keyPoints,
+      keyTerms: read.keyTerms,
+      warnings: read.warnings,
+      suggestedTitle: read.suggestedTitle,
+    });
+
+    return { ...read, userId };
+  },
+});
+
+/* ---------------------------- Attachments ---------------------------- */
+
+/** Turn photos into Gemini inline image parts. */
 async function photoParts(ctx: ActionCtx, ids: Id<"noteImages">[] | undefined) {
   if (!ids?.length) return { parts: [], labels: [] };
   const photos = await ctx.runQuery(api.study.noteImageData, { ids });
@@ -181,7 +404,7 @@ async function photoParts(ctx: ActionCtx, ids: Id<"noteImages">[] | undefined) {
   };
 }
 
-/** Turn attached PDFs into Gemini inline document parts. */
+/** Turn PDFs in storage into Gemini inline document parts. */
 async function fileParts(ctx: ActionCtx, ids: Id<"noteFiles">[] | undefined) {
   if (!ids?.length) return { parts: [], labels: [], tooBig: [] as string[] };
   const files = await ctx.runQuery(api.study.noteFileSource, { ids });
@@ -203,6 +426,57 @@ async function fileParts(ctx: ActionCtx, ids: Id<"noteFiles">[] | undefined) {
 
   return { parts, labels, tooBig };
 }
+
+/**
+ * Prefer text we have already read. Re-sending a photograph or a PDF costs
+ * bandwidth and tokens, and Gemini reads it less accurately the second time —
+ * so once something has a stored transcript we use that instead.
+ */
+async function transcriptSources(
+  ctx: ActionCtx,
+  photoIds: Id<"noteImages">[] | undefined,
+  fileIds: Id<"noteFiles">[] | undefined,
+) {
+  const blocks: string[] = [];
+  const needPhotos: Id<"noteImages">[] = [];
+  const needFiles: Id<"noteFiles">[] = [];
+
+  if (photoIds?.length) {
+    const rows = await ctx.runQuery(api.study.noteImageTranscripts, {
+      ids: photoIds,
+    });
+    const read = new Set(
+      rows.filter((row) => row.transcript).map((row) => row._id),
+    );
+    for (const row of rows) {
+      if (row.transcript) {
+        blocks.push(
+          `From the photographed page titled "${row.title}":\n"""\n${row.transcript.slice(0, 9000)}\n"""`,
+        );
+      }
+    }
+    for (const id of photoIds) if (!read.has(id)) needPhotos.push(id);
+  }
+
+  if (fileIds?.length) {
+    const rows = await ctx.runQuery(api.study.noteFileSource, { ids: fileIds });
+    const read = new Set(
+      rows.filter((row) => row.transcript).map((row) => row._id),
+    );
+    for (const row of rows) {
+      if (row.transcript) {
+        blocks.push(
+          `From the PDF titled "${row.title}":\n"""\n${row.transcript.slice(0, 9000)}\n"""`,
+        );
+      }
+    }
+    for (const id of fileIds) if (!read.has(id)) needFiles.push(id);
+  }
+
+  return { text: blocks.join("\n\n"), needPhotos, needFiles };
+}
+
+/* ---------------------------- Study helper ---------------------------- */
 
 /**
  * The study helper: a Gemini-backed tutor that can see the student's day —
@@ -234,14 +508,21 @@ export const askStudyHelper = action({
     const context = await ctx.runQuery(api.study.helperContext, {
       noteId: args.noteId,
     });
-    const photos = await photoParts(ctx, args.photoIds);
-    const documents = await fileParts(ctx, args.fileIds);
+    const read = await transcriptSources(
+      ctx,
+      args.photoIds,
+      args.fileIds,
+    );
+    // Only send the raw material when we have no stored transcription of it.
+    const photos = await photoParts(ctx, read.needPhotos);
+    const documents = await fileParts(ctx, read.needFiles);
 
     const system = [
       "You are the study helper inside Commonplace, a study desk for students.",
       "Be warm, concise and practical: short paragraphs, no filler, no markdown tables.",
       "Ground answers about progress in the student data below; if asked about progress, quote the actual numbers.",
-      "If a note or any attached photo is given, treat it as the student's own study material — read handwriting and diagrams as best you can and say so if a photo is unclear.",
+      "Anything quoted as material below is the student's own notes, already transcribed — rely on it rather than re-reading an image.",
+      "If raw photos or PDFs are attached, treat them as their own study material and say so if something is unclear.",
       "You help with study planning, revision techniques, explanations and motivation — nothing else.",
       "",
       `Student data (JSON): ${JSON.stringify(context)}`,
@@ -260,6 +541,13 @@ export const askStudyHelper = action({
           role: "user" as const,
           parts: [
             { text: question.slice(0, 4000) },
+            ...(read.text
+              ? [
+                  {
+                    text: `The student's own material, already transcribed:\n${read.text}`,
+                  },
+                ]
+              : []),
             ...(photos.parts.length > 0
               ? [
                   {
@@ -348,127 +636,8 @@ function normaliseQuestions(raw: unknown, wanted: number): QuizQuestion[] {
 }
 
 /**
- * Read a photographed page: transcribe what is there, then summarise it into
- * the notes the student can rename and study from.
- */
-export const summarizePhoto = action({
-  args: { imageId: v.id("noteImages") },
-  handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
-    if (userId === null) throw new Error("Sign in to use your notes.");
-
-    const photos = await ctx.runQuery(api.study.noteImageData, {
-      ids: [args.imageId],
-    });
-    const photo = photos[0];
-    if (!photo) throw new Error("That photo isn't yours.");
-
-    const apiKey = await requireApiKey();
-    const attached = await photoParts(ctx, [args.imageId]);
-
-    const prompt = [
-      "You are reading a photograph of a student's notebook page.",
-      "Transcribe the page faithfully first — handwriting, headings, lists, diagrams described in words.",
-      "Then summarise it for revision.",
-      "",
-      'Reply with JSON only: {"summary":"3-6 sentences on what this page covers","keyPoints":["5-8 short bullet points of the actual content"],"subject":"the single subject or topic this page belongs to"}',
-      "If the photo is too blurred or cropped to read, say so in the summary and return no key points.",
-    ].join("\n");
-
-    const payload = {
-      contents: [
-        {
-          role: "user" as const,
-          parts: [{ text: prompt }, ...attached.parts],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 2048,
-        responseMimeType: "application/json",
-      },
-    };
-
-    const { text, model } = await generateText(apiKey, payload);
-    const parsed = extractJson(text);
-    const summary = asString(parsed.summary) || "No summary could be read.";
-    const keyPoints = Array.isArray(parsed.keyPoints)
-      ? parsed.keyPoints.map(asString).filter(Boolean)
-      : [];
-
-    await ctx.runMutation(api.study.setNoteImageSummary, {
-      id: args.imageId,
-      summary,
-      keyPoints,
-    });
-
-    return { summary, keyPoints, model, userId };
-  },
-});
-
-/** Read an uploaded PDF: what it covers, and the facts worth revising. */
-export const summarizeFile = action({
-  args: { fileId: v.id("noteFiles") },
-  handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
-    if (userId === null) throw new Error("Sign in to use your notes.");
-
-    const files = await ctx.runQuery(api.study.noteFileSource, {
-      ids: [args.fileId],
-    });
-    const file = files[0];
-    if (!file) throw new Error("That file isn't yours.");
-    if (file.bytes > MAX_INLINE_PDF_BYTES) {
-      throw new Error(
-        "That PDF is too large for the AI to read at once — try an under-14 MB copy.",
-      );
-    }
-
-    const apiKey = await requireApiKey();
-    const attached = await fileParts(ctx, [args.fileId]);
-
-    const prompt = [
-      `You are reading a PDF from a student's library, titled "${file.title}".`,
-      "Summarise it for revision.",
-      "",
-      'Reply with JSON only: {"summary":"4-6 sentences on what this document covers","keyPoints":["6-10 short bullet points of the actual examinable content"],"subject":"the single subject or topic this belongs to"}',
-      "If the PDF is scanned with no readable text, say so in the summary.",
-    ].join("\n");
-
-    const payload = {
-      contents: [
-        {
-          role: "user" as const,
-          parts: [{ text: prompt }, ...attached.parts],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 2048,
-        responseMimeType: "application/json",
-      },
-    };
-
-    const { text, model } = await generateText(apiKey, payload);
-    const parsed = extractJson(text);
-    const summary = asString(parsed.summary) || "No summary could be read.";
-    const keyPoints = Array.isArray(parsed.keyPoints)
-      ? parsed.keyPoints.map(asString).filter(Boolean)
-      : [];
-
-    await ctx.runMutation(api.study.setNoteFileSummary, {
-      id: args.fileId,
-      summary,
-      keyPoints,
-    });
-
-    return { summary, keyPoints, model, userId };
-  },
-});
-
-/**
  * Build a multiple-choice quiz on any topic with Gemini. When the student picks
- * a note, the quiz is written from that note's own material.
+ * a note, a photograph or a PDF, the paper is written from their own material.
  */
 export const generateQuiz = action({
   args: {
@@ -488,20 +657,23 @@ export const generateQuiz = action({
     const count = Math.min(Math.max(Math.trunc(args.count ?? 5), 1), 20);
     const apiKey = await requireApiKey();
 
-    const note = args.noteId ? await ctx.runQuery(api.study.quizSource, {
-      noteId: args.noteId,
-    }) : null;
+    const note = args.noteId
+      ? await ctx.runQuery(api.study.quizSource, { noteId: args.noteId })
+      : null;
 
-    const photos = await photoParts(ctx, args.photoIds);
-    const documents = await fileParts(ctx, args.fileIds);
+    const read = await transcriptSources(ctx, args.photoIds, args.fileIds);
+    const photos = await photoParts(ctx, read.needPhotos);
+    const documents = await fileParts(ctx, read.needFiles);
 
     const source = [
       note
         ? `Write the quiz from the student's own note, titled “${note.title}”:\n"""\n${note.body.slice(0, 8000)}\n"""`
-        : "Write the quiz from your own knowledge of the topic.",
+        : read.text
+          ? `Write the quiz from the student's own material below. Ask only about what appears in it.\n${read.text}`
+          : "Write the quiz from your own knowledge of the topic.",
       ...(photos.parts.length > 0
         ? [
-            `Also use the attached photos of the student's handwritten notes (${photos.labels.join(", ")}) as source material — transcribe them before writing questions.`,
+            `Also use the attached photographs (${photos.labels.join(", ")}) as source material — transcribe them before writing questions.`,
           ]
         : []),
       ...(documents.tooBig.length > 0
@@ -523,6 +695,7 @@ export const generateQuiz = action({
       "- Every question must have exactly 4 short options, labelled A to D by position.",
       "- Exactly one option is correct; distractors must be plausible and clearly wrong.",
       "- Vary the difficulty: easy, medium, then harder.",
+      "- Ask about the specific content in front of you, not generic questions anyone could answer without reading it.",
       "- Add a one or two sentence explanation for the correct answer.",
       "",
       'Reply with JSON only, in this shape: {"questions":[{"question":"...","options":["...","...","...","..."],"answerIndex":0,"explanation":"..."}]}',

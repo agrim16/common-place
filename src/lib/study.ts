@@ -108,13 +108,31 @@ export const ACCEPTED_IMAGE_TYPES = [
 export const ACCEPTED_IMAGE_EXTENSIONS =
   ".png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,.heic,.heif";
 
-function loadImageElement(file: File): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
+/**
+ * Decode with EXIF orientation applied where possible — a page photographed in
+ * portrait is often stored sideways, and Gemini reads a rotated page far worse.
+ */
+async function decodeImage(file: File): Promise<{
+  source: CanvasImageSource;
+  width: number;
+  height: number;
+}> {
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file, {
+        imageOrientation: "from-image",
+      });
+      return { source: bitmap, width: bitmap.width, height: bitmap.height };
+    } catch {
+      // fall through to the <img> path
+    }
+  }
+  return await new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const image = new Image();
     image.onload = () => {
       URL.revokeObjectURL(url);
-      resolve(image);
+      resolve({ source: image, width: image.width, height: image.height });
     };
     image.onerror = () => {
       URL.revokeObjectURL(url);
@@ -126,8 +144,9 @@ function loadImageElement(file: File): Promise<HTMLImageElement> {
 
 /**
  * Turn any uploaded image (png, jpg, webp, screenshots…) into a downscaled
- * base64 JPEG plus a small thumbnail, so a page photo is cheap to store and
- * still legible to the model.
+ * base64 JPEG plus a small thumbnail. Dense handwriting needs the pixels, so
+ * this keeps a generous 2000px master at high JPEG quality — the model reads a
+ * page far more accurately at this size than at a heavily compressed one.
  */
 export async function prepareNoteImage(file: File): Promise<{
   data: string;
@@ -136,7 +155,7 @@ export async function prepareNoteImage(file: File): Promise<{
   if (!file.type.startsWith("image/")) {
     throw new Error("Only image files can be attached as notes.");
   }
-  const image = await loadImageElement(file);
+  const image = await decodeImage(file);
 
   const render = (maxEdge: number, quality: number): string => {
     const scale = Math.min(
@@ -150,11 +169,14 @@ export async function prepareNoteImage(file: File): Promise<{
     canvas.height = height;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("This browser could not process the image.");
-    context.drawImage(image, 0, 0, width, height);
+    // A white ground stops dark-mode JPEG encoders muddying thin ink strokes.
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image.source, 0, 0, width, height);
     return canvas.toDataURL("image/jpeg", quality).split(",")[1] ?? "";
   };
 
-  return { data: render(1400, 0.72), thumb: render(240, 0.6) };
+  return { data: render(2000, 0.82), thumb: render(320, 0.65) };
 }
 
 /** Convex file storage allows 32 MiB per file; stay comfortably under it. */

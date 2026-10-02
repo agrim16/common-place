@@ -55,6 +55,7 @@ export function NotesPanel() {
   const [renameValue, setRenameValue] = useState("");
   const [busyPhoto, setBusyPhoto] = useState<string | null>(null);
   const [busyFile, setBusyFile] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [status, setStatus] = useState("");
 
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -556,6 +557,57 @@ export function NotesPanel() {
                     </p>
                   ) : null}
 
+                  {photo.warnings && photo.warnings.length > 0 && (
+                    <p className="mt-1 text-[10px] leading-4 text-destructive">
+                      {photo.warnings[0]}
+                    </p>
+                  )}
+
+                  {photo.suggestedTitle &&
+                    photo.suggestedTitle !== photo.title && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void renameNoteImage({
+                            id: photo._id,
+                            title: photo.suggestedTitle ?? "",
+                          })
+                            .then(() => toast.success("Renamed."))
+                            .catch((error) =>
+                              toast.error(message(error, "Could not rename.")),
+                            )
+                        }
+                        className={`font-archive mt-1 text-left text-[9px] leading-4 text-primary underline-offset-4 hover:underline ${FOCUS}`}
+                      >
+                        Suggested: “{photo.suggestedTitle}” — use this
+                      </button>
+                    )}
+
+                  {photo.keyPoints && photo.keyPoints.length > 0 && (
+                    <button
+                      type="button"
+                      aria-expanded={expanded === photo._id}
+                      onClick={() =>
+                        setExpanded((prev) =>
+                          prev === photo._id ? null : photo._id,
+                        )
+                      }
+                      className={`font-archive mt-1 text-[9px] text-muted-foreground underline-offset-4 hover:underline ${FOCUS}`}
+                    >
+                      {expanded === photo._id
+                        ? "Hide key points"
+                        : `${photo.keyPoints.length} key points`}
+                    </button>
+                  )}
+
+                  {expanded === photo._id && photo.keyPoints && (
+                    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[10px] leading-4">
+                      {photo.keyPoints.map((point) => (
+                        <li key={point}>{point}</li>
+                      ))}
+                    </ul>
+                  )}
+
                   <div className="mt-1.5 flex items-center gap-1 border-t border-dashed border-border/70 pt-1.5">
                     <button
                       type="button"
@@ -708,6 +760,70 @@ export function NotesPanel() {
                       {file.summary}
                     </p>
                   ) : null}
+
+                  {file.warnings && file.warnings.length > 0 && (
+                    <p className="mt-1 text-[11px] leading-4 text-destructive">
+                      {file.warnings[0]}
+                    </p>
+                  )}
+
+                  {file.suggestedTitle && file.suggestedTitle !== file.title && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void renameNoteFile({
+                          id: file._id,
+                          title: file.suggestedTitle ?? "",
+                        })
+                          .then(() => toast.success("Renamed."))
+                          .catch((error) =>
+                            toast.error(message(error, "Could not rename.")),
+                          )
+                      }
+                      className={`font-archive mt-1 text-left text-[9px] leading-4 text-primary underline-offset-4 hover:underline ${FOCUS}`}
+                    >
+                      Suggested: “{file.suggestedTitle}” — use this
+                    </button>
+                  )}
+
+                  {file.keyTerms && file.keyTerms.length > 0 && (
+                    <ul className="mt-1.5 flex flex-wrap gap-1">
+                      {file.keyTerms.slice(0, 6).map((term) => (
+                        <li
+                          key={term}
+                          className="rounded-sm border border-border px-1.5 py-0.5 text-[9px] text-muted-foreground"
+                        >
+                          {term.split("—")[0]?.trim() || term}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {file.keyPoints && file.keyPoints.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        aria-expanded={expanded === file._id}
+                        onClick={() =>
+                          setExpanded((prev) =>
+                            prev === file._id ? null : file._id,
+                          )
+                        }
+                        className={`font-archive mt-1.5 text-[9px] text-muted-foreground underline-offset-4 hover:underline ${FOCUS}`}
+                      >
+                        {expanded === file._id
+                          ? "Hide key points"
+                          : `${file.keyPoints.length} key points`}
+                      </button>
+                      {expanded === file._id && (
+                        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[12px] leading-5">
+                          {file.keyPoints.map((point) => (
+                            <li key={point}>{point}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  )}
 
                   <div className="mt-1.5 flex items-center gap-2">
                     <button

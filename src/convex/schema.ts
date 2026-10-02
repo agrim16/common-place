@@ -71,7 +71,11 @@ const schema = defineSchema(
       data: v.string(), // base64, no data: prefix
       thumb: v.string(), // small base64 preview for the library list
       summary: v.optional(v.string()), // what the AI read off the page
+      transcript: v.optional(v.string()), // faithful transcription, reused later
       keyPoints: v.optional(v.array(v.string())),
+      keyTerms: v.optional(v.array(v.string())),
+      warnings: v.optional(v.array(v.string())), // blurred/cropped/unclear parts
+      suggestedTitle: v.optional(v.string()),
       summarizedAt: v.optional(v.number()),
       createdAt: v.number(),
     }).index("by_user", ["userId"]),
@@ -85,7 +89,11 @@ const schema = defineSchema(
       storageId: v.string(), // Convex storage handle for the real bytes
       bytes: v.number(), // original file size in bytes
       summary: v.optional(v.string()),
+      transcript: v.optional(v.string()),
       keyPoints: v.optional(v.array(v.string())),
+      keyTerms: v.optional(v.array(v.string())),
+      warnings: v.optional(v.array(v.string())),
+      suggestedTitle: v.optional(v.string()),
       summarizedAt: v.optional(v.number()),
       createdAt: v.number(),
     }).index("by_user", ["userId"]),
