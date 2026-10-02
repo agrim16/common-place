@@ -7,7 +7,7 @@ import { action } from "./_generated/server";
 
 const MAX_HISTORY = 8;
 
-/** Tried in order; the first that exists on this key's account wins. */
+/** Tried in order; the first that succeeds wins. */
 const CANDIDATE_MODELS = [
   process.env.GEMINI_MODEL,
   "gemini-flash-latest",
@@ -16,7 +16,8 @@ const CANDIDATE_MODELS = [
 
 type Attempt =
   | { kind: "ok"; answer: string }
-  | { kind: "missing" }
+  | { kind: "missing" } // model unavailable for this key — try the next one
+  | { kind: "busy" } // 503/overloaded — worth one retry
   | { kind: "error"; status: number };
 
 async function extractAnswer(data: {
@@ -42,15 +43,24 @@ async function tryGenerate(
       body: JSON.stringify(payload),
     },
   );
+  const detail = await response.text().catch(() => "");
+  console.log(`[gemini] ${model} -> HTTP ${response.status}`);
+
   if (response.ok) {
-    const answer = await extractAnswer(await response.json());
-    return answer ? { kind: "ok", answer } : { kind: "missing" };
-  }
-  if (response.status === 404 || response.status === 503) {
+    let answer = "";
+    try {
+      answer = await extractAnswer(JSON.parse(detail));
+    } catch {
+      answer = "";
+    }
+    if (answer) return { kind: "ok", answer };
+    console.log(`[gemini] ${model} returned empty: ${detail.slice(0, 300)}`);
     return { kind: "missing" };
   }
-  const detail = await response.text().catch(() => "");
-  console.error("Gemini error", model, response.status, detail);
+
+  console.log(`[gemini] ${model} body: ${detail.slice(0, 300)}`);
+  if (response.status === 404) return { kind: "missing" };
+  if (response.status === 503) return { kind: "busy" };
   return { kind: "error", status: response.status };
 }
 
@@ -61,7 +71,10 @@ async function discoverModel(apiKey: string): Promise<string | null> {
       "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100",
       { headers: { "x-goog-api-key": apiKey } },
     );
-    if (!response.ok) return null;
+    if (!response.ok) {
+      console.log(`[gemini] discovery list HTTP ${response.status}`);
+      return null;
+    }
     const data = (await response.json()) as {
       models?: Array<{
         name?: string;
@@ -74,14 +87,15 @@ async function discoverModel(apiKey: string): Promise<string | null> {
       )
       .map((m) => String(m.name ?? "").replace(/^models\//, ""))
       .filter(Boolean);
-    return (
+    const picked =
       names.find((n) => n.includes("flash") && !n.startsWith("gemini-2.5")) ??
       names.find((n) => n.includes("flash")) ??
       names[0] ??
-      null
-    );
+      null;
+    console.log(`[gemini] discovery: ${names.length} models, picked ${picked}`);
+    return picked;
   } catch (error) {
-    console.error("Model discovery failed", error);
+    console.log(`[gemini] discovery failed: ${String(error).slice(0, 200)}`);
     return null;
   }
 }
@@ -144,30 +158,47 @@ export const askStudyHelper = action({
       generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
     };
 
-    // Preferred models first, then whatever this key can actually use.
-    for (const model of CANDIDATE_MODELS) {
-      const attempt = await tryGenerate(model, apiKey, payload);
-      if (attempt.kind === "ok") return { answer: attempt.answer, model };
-      if (attempt.kind === "error" && attempt.status === 429) {
-        throw new Error(
-          "The helper is rate-limited right now — wait a moment and try again.",
-        );
-      }
-      if (attempt.kind === "error") {
-        throw new Error(
-          `The study helper could not answer (HTTP ${attempt.status}).`,
-        );
-      }
-    }
+    const candidates = [...CANDIDATE_MODELS];
+    let busyRetries = 0;
 
-    const discovered = await discoverModel(apiKey);
-    if (discovered) {
-      const attempt = await tryGenerate(discovered, apiKey, payload);
-      if (attempt.kind === "ok") return { answer: attempt.answer, model: discovered };
+    // Two passes: preferred models first, discovery appended, 503s retried once.
+    for (let pass = 0; pass < 3; pass++) {
+      if (pass === 1) {
+        const discovered = await discoverModel(apiKey);
+        if (discovered && !candidates.includes(discovered)) {
+          candidates.push(discovered);
+        }
+      }
+
+      for (const model of candidates) {
+        const attempt = await tryGenerate(model, apiKey, payload);
+        if (attempt.kind === "ok") {
+          return { answer: attempt.answer, model };
+        }
+        if (attempt.kind === "busy") {
+          busyRetries += 1;
+          if (busyRetries <= 3) {
+            await new Promise((resolve) => setTimeout(resolve, 700));
+            continue;
+          }
+          continue;
+        }
+        if (attempt.kind === "error") {
+          if (attempt.status === 429) {
+            throw new Error(
+              "The helper is rate-limited right now — wait a moment and try again.",
+            );
+          }
+          throw new Error(
+            `The study helper could not answer (HTTP ${attempt.status}).`,
+          );
+        }
+        // missing → next model
+      }
     }
 
     throw new Error(
-      "No usable Gemini model was found for this API key — check GEMINI_API_KEY (or set GEMINI_MODEL).",
+      "No usable Gemini model was found for this API key — see server logs for the per-model HTTP statuses.",
     );
   },
 });
