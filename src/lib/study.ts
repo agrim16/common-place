@@ -180,11 +180,10 @@ export async function prepareNoteImage(file: File): Promise<{
 }
 
 /**
- * Uploads go straight to storage, where Convex has no per-file cap — but the
- * upload POST has a 2-minute timeout, so this is roughly what a phone on a
- * slow connection can actually deliver.
+ * Our own cap, matched by MAX_PDF_BYTES in src/convex/study.ts. Generous for
+ * worksheets and past papers, quick to upload on a phone.
  */
-export const MAX_PDF_BYTES = 100 * 1024 * 1024;
+export const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
