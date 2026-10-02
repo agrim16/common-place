@@ -1,9 +1,10 @@
 import { FlipClock } from "@/components/study/FlipClock";
 import { FocusTimer } from "@/components/study/FocusTimer";
+import { NotesPanel } from "@/components/study/NotesPanel";
 import { ProgressPanel } from "@/components/study/ProgressPanel";
 import { QuizPanel } from "@/components/study/QuizPanel";
 import { RemindersPanel } from "@/components/study/RemindersPanel";
-import { StudyHelperPanel } from "@/components/study/StudyHelperPanel";
+import { StudyHelperPanel, type HelperAttachment } from "@/components/study/StudyHelperPanel";
 import { TimetablePanel } from "@/components/study/TimetablePanel";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -27,12 +28,13 @@ import {
   Bell,
   CalendarDays,
   LogOut,
+  NotebookPen,
   ScrollText,
   Sparkles,
   Trophy,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 const DAILY_GOAL_MINUTES = 120;
@@ -45,6 +47,7 @@ const TABS = [
   { id: "desk", label: "Desk", icon: AlarmClock },
   { id: "timetable", label: "Timetable", icon: CalendarDays },
   { id: "reminders", label: "Reminders", icon: Bell },
+  { id: "notes", label: "Notes", icon: NotebookPen },
   { id: "quiz", label: "Quiz", icon: ScrollText },
   { id: "buddy", label: "Helper", icon: Sparkles },
   { id: "marks", label: "Marks", icon: Trophy },
@@ -61,7 +64,21 @@ function greetingFor(hours: number): string {
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
-  const [tab, setTab] = useState<TabId>("desk");
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  /* Deep links: /dashboard?tab=notes, and ?tab=helper&note=<id> from the library.
+     The URL is the single source of truth for which panel is open. */
+  const requestedTab = searchParams.get("tab");
+  const tab: TabId =
+    TABS.find((t) => t.id === requestedTab)?.id ?? "desk";
+  const attachment: HelperAttachment = useMemo(
+    () => ({
+      note: searchParams.get("note") ?? undefined,
+      photo: searchParams.get("photo") ?? undefined,
+      pdf: searchParams.get("pdf") ?? undefined,
+    }),
+    [searchParams],
+  );
 
   const [now, setNow] = useState(() => Date.now());
   const [midnight] = useState(() => {
@@ -144,7 +161,7 @@ export default function Dashboard() {
   };
 
   const selectTab = (next: TabId) => {
-    setTab(next);
+    setSearchParams(next === "desk" ? {} : { tab: next }, { replace: true });
     window.scrollTo({ top: 0 });
   };
 
@@ -289,6 +306,11 @@ export default function Dashboard() {
                 <RemindersPanel reminders={reminders} now={now} />
               </div>
             )}
+            {tab === "notes" && (
+              <div className="pt-6">
+                <NotesPanel />
+              </div>
+            )}
             {tab === "quiz" && (
               <div className="pt-6">
                 <QuizPanel />
@@ -296,7 +318,10 @@ export default function Dashboard() {
             )}
             {tab === "buddy" && (
               <div className="pt-6">
-                <StudyHelperPanel />
+                <StudyHelperPanel
+                  key={`${attachment.note ?? ""}|${attachment.photo ?? ""}|${attachment.pdf ?? ""}`}
+                  attachment={attachment}
+                />
               </div>
             )}
             {tab === "marks" && (
@@ -309,8 +334,8 @@ export default function Dashboard() {
 
         <footer className="mt-10 border-t border-border pt-5 text-center">
           <p className="font-archive text-[9px] leading-5 text-muted-foreground">
-            Commonplace · Study Buddy — timetable, focus timer, reminders, AI
-            quizzes, XP &amp; scoreboard, notes library, study helper.
+            Commonplace · Study Buddy — timetable, focus timer, reminders, notes
+            library, AI quizzes, XP &amp; scoreboard, study helper.
           </p>
         </footer>
       </div>

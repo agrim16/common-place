@@ -1,32 +1,20 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import {
-  ACCEPTED_IMAGE_EXTENSIONS,
-  formatBytes,
-  MAX_PDF_BYTES,
-  prepareNoteImage,
-  readPdfAsChunks,
-} from "@/lib/study";
-import { useAction, useMutation, useQuery } from "convex/react";
-import {
-  BookOpen,
-  Check,
-  FileText,
-  FileUp,
-  ImageIcon,
-  Loader2,
-  Pencil,
-  Send,
-  Sparkles,
-  Trash2,
-} from "lucide-react";
+import { useAction, useQuery } from "convex/react";
+import { BookOpen, Loader2, Send } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 type Message = { role: "you" | "helper"; text: string };
+
+/** Which library item the Notes tab handed over, if any. */
+export type HelperAttachment = {
+  note?: string;
+  photo?: string;
+  pdf?: string;
+};
 
 const QUICK_PROMPTS = [
   "How am I doing today?",
@@ -35,49 +23,45 @@ const QUICK_PROMPTS = [
   "Give me a revision trick",
 ];
 
+const FOCUS =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 focus-visible:ring-offset-background";
+
 /**
- * Study Buddy: a Gemini-backed helper that can see the student's day, plus
- * the note library it can be pointed at ("upload your notes").
+ * Study Buddy: a Gemini-backed helper that can see the student's day and any
+ * note, note photo or PDF they point it at. The library itself lives in the
+ * Notes tab.
  */
-export function StudyHelperPanel() {
-  const [tab, setTab] = useState<"ask" | "notes">("ask");
+export function StudyHelperPanel({
+  attachment,
+}: {
+  attachment?: HelperAttachment;
+}) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [noteId, setNoteId] = useState<Id<"notes"> | null>(null);
-  const [photoId, setPhotoId] = useState<Id<"noteImages"> | null>(null);
-  const [fileId, setFileId] = useState<Id<"noteFiles"> | null>(null);
-  const [uploadingPdf, setUploadingPdf] = useState(false);
-  const [summarisingFile, setSummarisingFile] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const [summarisingId, setSummarisingId] = useState<string | null>(null);
+  const [noteId, setNoteId] = useState<Id<"notes"> | null>(
+    () => (attachment?.note as Id<"notes"> | undefined) ?? null,
+  );
+  const [photoId, setPhotoId] = useState<Id<"noteImages"> | null>(
+    () => (attachment?.photo as Id<"noteImages"> | undefined) ?? null,
+  );
+  const [fileId, setFileId] = useState<Id<"noteFiles"> | null>(
+    () => (attachment?.pdf as Id<"noteFiles"> | undefined) ?? null,
+  );
   const listEndRef = useRef<HTMLDivElement | null>(null);
-
-  // Notes tab state
-  const [noteTitle, setNoteTitle] = useState("");
-  const [noteBody, setNoteBody] = useState("");
-  const [savingNote, setSavingNote] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   const notes = useQuery(api.study.listNotes);
   const photos = useQuery(api.study.listNoteImages);
-  const createNoteImage = useMutation(api.study.createNoteImage);
-  const removePhoto = useMutation(api.study.deleteNoteImage);
-  const renamePhoto = useMutation(api.study.renameNoteImage);
-  const renameNoteMutation = useMutation(api.study.renameNote);
-  const summarise = useAction(api.ai.summarizePhoto);
   const files = useQuery(api.study.listNoteFiles);
-  const createNoteFile = useMutation(api.study.createNoteFile);
-  const putFileChunk = useMutation(api.study.putNoteFileChunk);
-  const removeFile = useMutation(api.study.deleteNoteFile);
-  const renameFile = useMutation(api.study.renameNoteFile);
-  const summariseFile = useAction(api.ai.summarizeFile);
   const ask = useAction(api.ai.askStudyHelper);
-  const createNote = useMutation(api.study.createNote);
-  const removeNote = useMutation(api.study.deleteNote);
+
+  /* Arriving from the Notes tab with something selected is handled by the
+     caller's `key`, which remounts this panel for a new hand-off. */
 
   const selectedNote = notes?.find((n) => n._id === noteId) ?? null;
+  const selectedPhoto = photos?.find((p) => p._id === photoId) ?? null;
+  const selectedFile = files?.find((f) => f._id === fileId) ?? null;
 
   const send = async (rawQuestion: string) => {
     const question = rawQuestion.trim();
@@ -108,804 +92,243 @@ export function StudyHelperPanel() {
       );
     } finally {
       setBusy(false);
-    }
-  };
-
-  const handleFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (file.size > 200_000) {
-      toast.error("That file is too large — keep notes under 200 KB.");
-      return;
-    }
-    try {
-      const text = await file.text();
-      setNoteBody((prev) => (prev ? `${prev}\n\n${text}` : text));
-      setNoteTitle((prev) => prev || file.name.replace(/\.[^.]+$/, ""));
-      toast.success(`${file.name} loaded into the note.`);
-    } catch {
-      toast.error("Could not read that file — try a .txt or .md.");
-    }
-    event.target.value = "";
-  };
-
-  const runSummary = async (id: Id<"noteImages">, name: string) => {
-    setSummarisingId(id);
-    try {
-      const result = await summarise({ imageId: id });
-      toast.success(`“${name}” summarised.`, {
-        description: result.summary.slice(0, 140),
-      });
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "That page could not be summarised.",
-      );
-    } finally {
-      setSummarisingId(null);
-    }
-  };
-
-  const runFileSummary = async (id: Id<"noteFiles">, name: string) => {
-    setSummarisingFile(id);
-    try {
-      const result = await summariseFile({ fileId: id });
-      toast.success(`“${name}” summarised.`, {
-        description: result.summary.slice(0, 140),
-      });
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "That PDF could not be summarised.",
-      );
-    } finally {
-      setSummarisingFile(null);
-    }
-  };
-
-  const handlePdf = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    setUploadingPdf(true);
-    try {
-      const { chunks, bytes } = await readPdfAsChunks(file);
-      const id = await createNoteFile({
-        title: file.name.replace(/\.[^.]+$/, "") || "Worksheet",
-        mimeType: "application/pdf",
-        bytes,
-        chunkCount: chunks.length,
-      });
-      for (const [index, data] of chunks.entries()) {
-        await putFileChunk({ fileId: id, index, data });
-      }
-      toast.success(`${file.name} filed — reading it now…`);
-      void runFileSummary(id, file.name);
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not read that PDF.",
-      );
-    } finally {
-      setUploadingPdf(false);
-    }
-  };
-
-  const startRename = (id: string, title: string) => {
-    setRenamingId(id);
-    setRenameValue(title);
-  };
-
-  const commitRename = async (
-    kind: "photo" | "note" | "file",
-    id: Id<"noteImages"> | Id<"notes"> | Id<"noteFiles">,
-  ) => {
-    const title = renameValue.trim();
-    setRenamingId(null);
-    if (!title) return;
-    try {
-      if (kind === "photo") {
-        await renamePhoto({ id: id as Id<"noteImages">, title });
-      } else if (kind === "file") {
-        await renameFile({ id: id as Id<"noteFiles">, title });
-      } else {
-        await renameNoteMutation({ id: id as Id<"notes">, title });
-      }
-      toast.success("Renamed.");
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not rename.",
-      );
-    }
-  };
-
-  const handlePhoto = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    if (file.size > 20_000_000) {
-      toast.error("That image is too large — keep photos under 20 MB.");
-      return;
-    }
-    setUploading(true);
-    try {
-      const { data, thumb } = await prepareNoteImage(file);
-      const id = await createNoteImage({
-        title: file.name.replace(/\.[^.]+$/, "") || "Photographed notes",
-        mimeType: "image/jpeg",
-        data,
-        thumb,
-      });
-      toast.success(`${file.name} added — reading it now…`);
-      void runSummary(id, file.name);
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not read that image.",
-      );
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleSaveNote = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!noteTitle.trim() || !noteBody.trim()) {
-      toast.error("A note needs a title and some words.");
-      return;
-    }
-    setSavingNote(true);
-    try {
-      await createNote({ title: noteTitle.trim(), body: noteBody.trim() });
-      setNoteTitle("");
-      setNoteBody("");
-      toast.success("Note filed in the library.");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not save.");
-    } finally {
-      setSavingNote(false);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
     }
   };
 
   return (
-    <section className="paper flex h-full flex-col rounded-sm p-6 sm:p-7">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <span className="font-archive text-[10px] text-primary">
-            Study Buddy · Helper
-          </span>
-          <h2 className="mt-2 text-2xl font-medium">Ask the study helper</h2>
-        </div>
-        <div className="flex gap-1.5">
-          {(["ask", "notes"] as const).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTab(t)}
-              className={`font-archive rounded-sm border px-3 py-2 text-[10px] transition-colors ${
-                tab === t
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border text-muted-foreground hover:text-foreground"
-              }`}
+    <section
+      className="paper flex h-full flex-col rounded-sm p-6 sm:p-7"
+      aria-labelledby="helper-heading"
+    >
+      <span className="font-archive text-[10px] text-primary">
+        Study Buddy · Helper
+      </span>
+      <h2 id="helper-heading" className="mt-2 text-2xl font-medium">
+        Ask the study helper
+      </h2>
+
+      {/* ---------------------------- Context ---------------------------- */}
+      <div className="mt-5">
+        <h3 className="font-archive text-[10px] tracking-[0.08em] text-muted-foreground uppercase">
+          What should it read?
+        </h3>
+
+        {notes && notes.length > 0 && (
+          <div className="mt-2">
+            <label
+              htmlFor="helper-note"
+              className="font-archive text-[10px] text-muted-foreground"
             >
-              {t === "ask" ? "Ask" : `Notes${notes?.length ? ` (${notes.length})` : ""}`}
-            </button>
-          ))}
-        </div>
+              A written note
+            </label>
+            <select
+              id="helper-note"
+              value={noteId ?? ""}
+              onChange={(e) =>
+                setNoteId(e.target.value ? (e.target.value as Id<"notes">) : null)
+              }
+              className={`mt-1 flex h-9 w-full rounded-md border border-input bg-background/80 px-3 text-sm ${FOCUS}`}
+            >
+              <option value="">No note — general questions</option>
+              {notes.map((n) => (
+                <option key={n._id} value={n._id}>
+                  {n.title}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {photos && photos.length > 0 && (
+          <div className="mt-3">
+            <label
+              htmlFor="helper-photo"
+              className="font-archive text-[10px] text-muted-foreground"
+            >
+              A photo of your notes
+            </label>
+            <select
+              id="helper-photo"
+              value={photoId ?? ""}
+              onChange={(e) =>
+                setPhotoId(
+                  e.target.value ? (e.target.value as Id<"noteImages">) : null,
+                )
+              }
+              className={`mt-1 flex h-9 w-full rounded-md border border-input bg-background/80 px-3 text-sm ${FOCUS}`}
+            >
+              <option value="">No photo</option>
+              {photos.map((photo) => (
+                <option key={photo._id} value={photo._id}>
+                  {photo.title}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {files && files.length > 0 && (
+          <div className="mt-3">
+            <label
+              htmlFor="helper-pdf"
+              className="font-archive text-[10px] text-muted-foreground"
+            >
+              One of your PDFs
+            </label>
+            <select
+              id="helper-pdf"
+              value={fileId ?? ""}
+              onChange={(e) =>
+                setFileId(
+                  e.target.value ? (e.target.value as Id<"noteFiles">) : null,
+                )
+              }
+              className={`mt-1 flex h-9 w-full rounded-md border border-input bg-background/80 px-3 text-sm ${FOCUS}`}
+            >
+              <option value="">No PDF</option>
+              {files.map((file) => (
+                <option key={file._id} value={file._id}>
+                  {file.title}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
-      {tab === "ask" ? (
-        <div className="mt-5 flex flex-1 flex-col">
-          {/* Context selector */}{notes && notes.length > 0 && (
-              <label className="block">
-                <span className="font-archive text-[10px] text-muted-foreground">
-                  Use a note as context
-                </span>
-                <select
-                  value={noteId ?? ""}
-                  onChange={(e) =>
-                    setNoteId(
-                      e.target.value ? (e.target.value as Id<"notes">) : null,
-                    )
-                  }
-                  className="mt-1 flex h-9 w-full rounded-md border border-input bg-background/80 px-3 text-sm"
-                >
-                  <option value="">No note — general questions</option>
-                  {notes.map((n) => (
-                    <option key={n._id} value={n._id}>
-                      {n.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-
-          {files && files.length > 0 && (
-            <label className="mt-3 block">
-              <span className="font-archive text-[10px] text-muted-foreground">
-                Or one of your PDFs
-              </span>
-              <select
-                value={fileId ?? ""}
-                onChange={(e) =>
-                  setFileId(
-                    e.target.value ? (e.target.value as Id<"noteFiles">) : null,
-                  )
-                }
-                className="mt-1 flex h-9 w-full rounded-md border border-input bg-background/80 px-3 text-sm"
-              >
-                <option value="">No PDF</option>
-                {files.map((file) => (
-                  <option key={file._id} value={file._id}>
-                    {file.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-
-          {photos && photos.length > 0 && (
-            <label className="mt-3 block">
-              <span className="font-archive text-[10px] text-muted-foreground">
-                Or a photo of your notes
-              </span>
-              <select
-                value={photoId ?? ""}
-                onChange={(e) =>
-                  setPhotoId(
-                    e.target.value
-                      ? (e.target.value as Id<"noteImages">)
-                      : null,
-                  )
-                }
-                className="mt-1 flex h-9 w-full rounded-md border border-input bg-background/80 px-3 text-sm"
-              >
-                <option value="">No photo</option>
-                {photos.map((photo) => (
-                  <option key={photo._id} value={photo._id}>
-                    {photo.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-
-          {/* Transcript */}
-          <div className="mt-4 max-h-72 min-h-40 overflow-y-auto rounded-sm border border-border/70 bg-[#fdfaf1] p-4">
-            {messages.length === 0 ? (
-              <div className="flex h-full min-h-32 flex-col items-start justify-center gap-3">
-                <p className="text-[15px] italic leading-7 text-muted-foreground">
-                  The helper knows your focus minutes, timetable and open
-                  reminders — ask about your progress, your next subject, or
-                  anything in your notes.
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {QUICK_PROMPTS.map((prompt) => (
-                    <button
-                      key={prompt}
-                      type="button"
-                      onClick={() => void send(prompt)}
-                      className="font-archive rounded-sm border border-border bg-background/70 px-2.5 py-1.5 text-[9px] text-muted-foreground transition-colors hover:border-primary hover:text-primary"
-                    >
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <ul className="space-y-3">
-                {messages.map((message, index) => (
-                  <li
-                    key={index}
-                    className={
-                      message.role === "you" ? "text-right" : "text-left"
-                    }
-                  >
-                    <span
-                      className={`font-archive text-[9px] ${
-                        message.role === "you"
-                          ? "text-muted-foreground"
-                          : "text-primary"
-                      }`}
-                    >
-                      {message.role === "you" ? "You" : "Helper"}
-                    </span>
-                    <p
-                      className={`whitespace-pre-wrap text-[15px] leading-7 ${
-                        message.role === "you"
-                          ? "text-foreground/80"
-                          : "text-foreground"
-                      }`}
-                    >
-                      {message.text}
-                    </p>
-                  </li>
-                ))}
-                {busy && (
-                  <li className="flex items-center gap-2 text-muted-foreground">
-                    <Loader2 className="size-3.5 animate-spin" />
-                    <span className="font-archive text-[9px]">
-                      Consulting the helper…
-                    </span>
-                  </li>
-                )}
-                <div ref={listEndRef} />
-              </ul>
-            )}
-          </div>
-
-          {/* Composer */}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void send(input);
-            }}
-            className="mt-3 flex gap-2"
-          >
-            <Input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={
-                selectedNote
-                  ? `Ask about “${selectedNote.title}”…`
-                  : "Ask about your progress, a topic, a plan…"
-              }
-              disabled={busy}
-              maxLength={4000}
-            />
-            <Button
-              type="submit"
-              disabled={busy || !input.trim()}
-              className="gap-1.5 rounded-sm"
-            >
-              {busy ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <>
-                  <Send className="size-4" /> Ask
-                </>
-              )}
-            </Button>
-          </form>
-          <p className="font-archive mt-3 text-[9px] leading-5 text-muted-foreground">
-            Powered by Gemini · answers use today&apos;s data
-            {selectedNote ? " and the selected note" : ""}
-            {photoId ? " and the selected photo" : ""}
-            {fileId ? " and the selected PDF" : ""}
-          </p>
-        </div>
-      ) : (
-        /* ------------------------------ Notes tab ------------------------------ */
-        <div className="mt-5">
-          {/* PDF library */}
-          <div className="rounded-sm border border-dashed border-primary/50 bg-background/50 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="font-archive flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                <FileText className="size-3.5" />
-                PDFs · worksheets, handouts, past papers
-              </span>
-              <label className="font-archive inline-flex cursor-pointer items-center gap-1.5 rounded-sm border border-border px-2.5 py-1.5 text-[9px] text-foreground transition-colors hover:border-primary hover:text-primary">
-                {uploadingPdf ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <FileUp className="size-3.5" />
-                )}
-                {uploadingPdf ? "Filing…" : "Upload .pdf"}
-                <input
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  className="hidden"
-                  onChange={(e) => void handlePdf(e)}
-                />
-              </label>
-            </div>
-
-            {files && files.length > 0 ? (
-              <ul className="mt-3 divide-y divide-border/70">
-                {files.map((file) => (
-                  <li key={file._id} className="py-2.5">
-                    <div className="flex items-start gap-3">
-                      <FileText className="mt-1 size-4 shrink-0 text-primary" />
-                      <div className="min-w-0 flex-1">
-                        {renamingId === file._id ? (
-                          <div className="flex items-center gap-1.5">
-                            <input
-                              autoFocus
-                              value={renameValue}
-                              onChange={(e) => setRenameValue(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter")
-                                  void commitRename("file", file._id);
-                                if (e.key === "Escape") setRenamingId(null);
-                              }}
-                              maxLength={120}
-                              aria-label="File title"
-                              className="w-full rounded-sm border border-input bg-background px-2 py-1 text-[15px]"
-                            />
-                            <button
-                              type="button"
-                              aria-label="Save name"
-                              onClick={() => void commitRename("file", file._id)}
-                              className="shrink-0 text-primary"
-                            >
-                              <Check className="size-4" />
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setFileId(file._id);
-                              setTab("ask");
-                              toast(`Now asking about “${file.title}”.`);
-                            }}
-                            className="block w-full truncate text-left text-[16px] font-medium hover:text-primary"
-                          >
-                            {file.title}
-                          </button>
-                        )}
-                        <span className="font-archive text-[9px] text-muted-foreground">
-                          PDF · {formatBytes(file.bytes)}
-                        </span>
-
-                        {summarisingFile === file._id ? (
-                          <span className="font-archive mt-1 flex items-center gap-1 text-[9px] text-muted-foreground">
-                            <Loader2 className="size-3 animate-spin" />
-                            Reading the document…
-                          </span>
-                        ) : file.summary ? (
-                          <p
-                            title={file.summary}
-                            className="mt-1 line-clamp-2 text-[13px] leading-5 italic text-muted-foreground"
-                          >
-                            {file.summary}
-                          </p>
-                        ) : null}
-
-                        <div className="mt-1.5 flex items-center gap-2">
-                          <button
-                            type="button"
-                            title="Rename"
-                            aria-label="Rename PDF"
-                            onClick={() => startRename(file._id, file.title)}
-                            className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-primary"
-                          >
-                            <Pencil className="size-3.5" />
-                          </button>
-                          {!file.summary && (
-                            <button
-                              type="button"
-                              title="Read this document again"
-                              aria-label="Summarise PDF"
-                              onClick={() =>
-                                void runFileSummary(file._id, file.title)
-                              }
-                              className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-primary"
-                            >
-                              <Sparkles className="size-3.5" />
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            title="Delete"
-                            aria-label="Delete PDF"
-                            onClick={() => {
-                              if (fileId === file._id) setFileId(null);
-                              void removeFile({ id: file._id }).catch((error) =>
-                                toast.error(
-                                  error instanceof Error
-                                    ? error.message
-                                    : "Could not delete.",
-                                ),
-                              );
-                            }}
-                            className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-destructive"
-                          >
-                            <Trash2 className="size-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="mt-3 text-[15px] italic leading-7 text-muted-foreground">
-                No PDFs yet. Upload a worksheet or past paper (up to{" "}
-                {formatBytes(MAX_PDF_BYTES)}) — the helper summarises it, and the
-                quiz can be set straight from it.
-              </p>
-            )}
-          </div>
-
-          {/* Photo library */}
-          <div className="rounded-sm border border-dashed border-primary/50 bg-background/50 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <span className="font-archive flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                <ImageIcon className="size-3.5" />
-                Photos of your notes
-              </span>
-              <label className="font-archive inline-flex cursor-pointer items-center gap-1.5 rounded-sm border border-border px-2.5 py-1.5 text-[9px] text-foreground transition-colors hover:border-primary hover:text-primary">
-                {uploading ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <FileUp className="size-3.5" />
-                )}
-                {uploading ? "Preparing…" : "Upload .png / .jpg / .webp"}
-                <input
-                  type="file"
-                  accept={`${ACCEPTED_IMAGE_EXTENSIONS},image/*`}
-                  className="hidden"
-                  onChange={(e) => void handlePhoto(e)}
-                />
-              </label>
-            </div>
-
-            {photos && photos.length > 0 ? (
-              <ul className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {photos.map((photo) => (
-                  <li
-                    key={photo._id}
-                    className={`group relative overflow-hidden rounded-sm border ${
-                      photoId === photo._id
-                        ? "border-primary"
-                        : "border-border"
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPhotoId(photo._id);
-                        setTab("ask");
-                        toast(`Now asking about “${photo.title}”.`);
-                      }}
-                      className="block w-full text-left"
-                    >
-                      <img
-                        src={`data:image/jpeg;base64,${photo.thumb}`}
-                        alt={photo.title}
-                        className="h-20 w-full object-cover"
-                      />
-                    </button>
-
-                    <div className="px-2 py-1.5">
-                      {renamingId === photo._id ? (
-                        <div className="flex items-center gap-1">
-                          <input
-                            autoFocus
-                            value={renameValue}
-                            onChange={(e) => setRenameValue(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter")
-                                void commitRename("photo", photo._id);
-                              if (e.key === "Escape") setRenamingId(null);
-                            }}
-                            maxLength={120}
-                            aria-label="Photo title"
-                            className="w-full rounded-sm border border-input bg-background px-1.5 py-1 text-[13px]"
-                          />
-                          <button
-                            type="button"
-                            aria-label="Save name"
-                            onClick={() =>
-                              void commitRename("photo", photo._id)
-                            }
-                            className="shrink-0 text-primary"
-                          >
-                            <Check className="size-3.5" />
-                          </button>
-                        </div>
-                      ) : (
-                        <span className="block truncate text-[13px]">
-                          {photo.title}
-                        </span>
-                      )}
-
-                      {summarisingId === photo._id ? (
-                        <span className="font-archive mt-1 flex items-center gap-1 text-[9px] text-muted-foreground">
-                          <Loader2 className="size-3 animate-spin" />
-                          Reading the page…
-                        </span>
-                      ) : photo.summary ? (
-                        <p
-                          title={photo.summary}
-                          className="mt-1 line-clamp-2 text-[11px] leading-4 italic text-muted-foreground"
-                        >
-                          {photo.summary}
-                        </p>
-                      ) : null}
-
-                      {/* Always visible: hover-only controls were unreachable on touch */}
-                      <div className="mt-1.5 flex items-center gap-1 border-t border-dashed border-border/70 pt-1.5">
-                        <button
-                          type="button"
-                          aria-label="Rename photo"
-                          title="Rename"
-                          onClick={() => startRename(photo._id, photo.title)}
-                          className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-primary"
-                        >
-                          <Pencil className="size-3.5" />
-                        </button>
-                        {!photo.summary && (
-                          <button
-                            type="button"
-                            aria-label="Summarise photo"
-                            title="Read this page again"
-                            onClick={() => void runSummary(photo._id, photo.title)}
-                            className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-primary"
-                          >
-                            <Sparkles className="size-3.5" />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          aria-label="Delete photo"
-                          title="Delete"
-                          onClick={() => {
-                            if (photoId === photo._id) setPhotoId(null);
-                            void removePhoto({ id: photo._id }).catch((error) =>
-                              toast.error(
-                                error instanceof Error
-                                  ? error.message
-                                  : "Could not delete.",
-                              ),
-                            );
-                          }}
-                          className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-destructive"
-                        >
-                          <Trash2 className="size-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="mt-3 text-[15px] italic leading-7 text-muted-foreground">
-                No photos yet. Snap a page of your notebook — the helper reads
-                the handwriting, and the quiz can be set straight from it.
-              </p>
-            )}
-          </div>
-          <form
-            onSubmit={handleSaveNote}
-            className="rounded-sm border border-dashed border-primary/50 bg-background/50 p-4"
-          >
-            <div className="flex items-center justify-between">
-              <span className="font-archive text-[10px] text-muted-foreground">
-                Upload or paste notes
-              </span>
-              <label className="font-archive inline-flex cursor-pointer items-center gap-1.5 rounded-sm border border-border px-2.5 py-1.5 text-[9px] text-foreground transition-colors hover:border-primary hover:text-primary">
-                <FileUp className="size-3.5" />
-                Upload .txt / .md
-                <input
-                  type="file"
-                  accept=".txt,.md,.markdown,text/plain,text/markdown"
-                  className="hidden"
-                  onChange={(e) => void handleFile(e)}
-                />
-              </label>
-            </div>
-            <Input
-              value={noteTitle}
-              onChange={(e) => setNoteTitle(e.target.value)}
-              placeholder="Title — e.g. Physics Chapter 4"
-              maxLength={120}
-              className="mt-3 bg-background/80"
-            />
-            <Textarea
-              value={noteBody}
-              onChange={(e) => setNoteBody(e.target.value)}
-              placeholder="Paste or write your notes here…"
-              rows={5}
-              maxLength={30_000}
-              className="mt-2 resize-y bg-background/80"
-            />
-            <Button
-              type="submit"
-              disabled={savingNote}
-              className="mt-3 w-full gap-1.5 rounded-sm"
-            >
-              {savingNote ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <>
-                  <BookOpen className="size-4" /> File it in the library
-                </>
-              )}
-            </Button>
-          </form>
-
-          {notes && notes.length > 0 && (
-            <ul className="mt-4 divide-y divide-border/70">
-              {notes.map((note) => (
-                <li key={note._id} className="group flex items-start gap-3 py-3">
-                  <Sparkles
-                    className={`mt-1 size-4 shrink-0 ${
-                      noteId === note._id ? "text-primary" : "text-border"
-                    }`}
-                  />
-                  <div className="min-w-0 flex-1">
-                    {renamingId === note._id ? (
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          autoFocus
-                          value={renameValue}
-                          onChange={(e) => setRenameValue(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter")
-                              void commitRename("note", note._id);
-                            if (e.key === "Escape") setRenamingId(null);
-                          }}
-                          maxLength={120}
-                          aria-label="Note title"
-                          className="w-full rounded-sm border border-input bg-background px-2 py-1 text-[15px]"
-                        />
-                        <button
-                          type="button"
-                          aria-label="Save name"
-                          onClick={() => void commitRename("note", note._id)}
-                          className="shrink-0 text-primary"
-                        >
-                          <Check className="size-4" />
-                        </button>
-                      </div>
-                    ) : (
-                      <p className="truncate text-[16px] font-medium">
-                        {note.title}
-                      </p>
-                    )}
-                    <p className="truncate text-sm italic text-muted-foreground">
-                      {note.body.slice(0, 90)}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setNoteId(note._id);
-                        setTab("ask");
-                        toast(`Now asking about “${note.title}”.`);
-                      }}
-                      className="font-archive mt-1.5 text-[9px] text-primary underline-offset-4 hover:underline"
-                    >
-                      Ask the helper about this →
-                    </button>
-                  </div><button
-                      type="button"
-                      aria-label="Rename note"
-                      onClick={() => startRename(note._id, note.title)}
-                      title="Rename"
-                      className="shrink-0 rounded-sm p-1.5 text-muted-foreground transition-colors hover:text-primary"
-                    >
-                      <Pencil className="size-4" />
-                    </button>
-                    <button
-                      type="button"aria-label="Delete note"
-                      title="Delete"
-                      onClick={() =>
-                        void removeNote({ id: note._id }).catch((error) =>
-                          toast.error(
-                            error instanceof Error
-                              ? error.message
-                              : "Could not delete.",
-                          ),
-                        )
-                      }
-                      className="shrink-0 rounded-sm p-1.5 text-muted-foreground transition-colors hover:text-destructive"
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {notes && notes.length === 0 && (
-            <p className="mt-4 text-[15px] italic leading-7 text-muted-foreground">
-              No notes yet. Upload a chapter or paste your own — the helper can
-              then answer from them.
+      {/* --------------------------- Transcript --------------------------- */}
+      <div
+        role="log"
+        aria-live="polite"
+        aria-label="Conversation with the study helper"
+        className="mt-4 max-h-72 min-h-40 overflow-y-auto rounded-sm border border-border/70 bg-[#fdfaf1] p-4"
+      >
+        {messages.length === 0 ? (
+          <div className="flex h-full min-h-32 flex-col items-start justify-center gap-3">
+            <p className="text-[15px] italic leading-7 text-muted-foreground">
+              The helper knows your focus minutes, timetable, open reminders and
+              quiz scores — ask about your progress, your next subject, or
+              anything in your library.
             </p>
-          )}
+            <div className="flex flex-wrap gap-2">
+              {QUICK_PROMPTS.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => void send(prompt)}
+                  className={`font-archive rounded-sm border border-border bg-background/70 px-2.5 py-1.5 text-[9px] text-muted-foreground transition-colors hover:border-primary hover:text-primary ${FOCUS}`}
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <ul className="space-y-3">
+            {messages.map((message, index) => (
+              <li
+                key={index}
+                className={message.role === "you" ? "text-right" : "text-left"}
+              >
+                <span
+                  className={`font-archive text-[9px] ${
+                    message.role === "you"
+                      ? "text-muted-foreground"
+                      : "text-primary"
+                  }`}
+                >
+                  {message.role === "you" ? "You" : "Helper"}
+                </span>
+                <p
+                  className={`whitespace-pre-wrap text-[15px] leading-7 ${
+                    message.role === "you"
+                      ? "text-foreground/80"
+                      : "text-foreground"
+                  }`}
+                >
+                  {message.text}
+                </p>
+              </li>
+            ))}
+            {busy && (
+              <li className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+                <span className="font-archive text-[9px]">
+                  Consulting the helper…
+                </span>
+              </li>
+            )}
+            <div ref={listEndRef} />
+          </ul>
+        )}
+      </div>
+
+      {/* ----------------------------- Composer ----------------------------- */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send(input);
+        }}
+        className="mt-3"
+      >
+        <label htmlFor="helper-question" className="sr-only">
+          Your question for the study helper
+        </label>
+        <div className="flex gap-2">
+          <Input
+            id="helper-question"
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={
+              selectedNote
+                ? `Ask about “${selectedNote.title}”…`
+                : selectedPhoto
+                  ? `Ask about the photo “${selectedPhoto.title}”…`
+                  : selectedFile
+                    ? `Ask about “${selectedFile.title}”…`
+                    : "Ask about your progress, a topic, a plan…"
+            }
+            disabled={busy}
+            maxLength={4000}
+          />
+          <Button
+            type="submit"
+            disabled={busy || !input.trim()}
+            className={`gap-1.5 rounded-sm ${FOCUS}`}
+          >
+            {busy ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <>
+                <Send className="size-4" /> Ask
+              </>
+            )}
+          </Button>
         </div>
-      )}
+      </form>
+
+      <p className="font-archive mt-3 text-[9px] leading-5 text-muted-foreground">
+        Powered by Gemini · answers use today&apos;s data
+        {selectedNote ? " and the selected note" : ""}
+        {selectedPhoto ? " and the selected photo" : ""}
+        {selectedFile ? " and the selected PDF" : ""}
+        . Keep your notes in the Notes tab.
+      </p>
+
+      <button
+        type="button"
+        onClick={() => {
+          setNoteId(null);
+          setPhotoId(null);
+          setFileId(null);
+          window.setTimeout(() => inputRef.current?.focus(), 0);
+        }}
+        className={`font-archive mt-2 self-start text-[9px] text-muted-foreground underline-offset-4 hover:underline ${FOCUS}`}
+      >
+        <BookOpen className="size-3" /> Clear what it&apos;s reading
+      </button>
     </section>
   );
 }
