@@ -9,10 +9,12 @@ import { action, type ActionCtx } from "./_generated/server";
 const MAX_HISTORY = 8;
 
 /**
- * Gemini rejects inline requests over roughly 20 MB, and base64 inflates the
- * bytes by 4:3 — so this is the largest PDF we will actually send.
+ * Base64-ing a PDF to inline it costs ~2.7x its size in memory (ArrayBuffer +
+ * Buffer + a UTF-16 string + the serialised payload), and a Node action only
+ * has 512 MB. Anything past this goes to the Files API instead, which streams
+ * the bytes and never holds them in memory.
  */
-const MAX_INLINE_PDF_BYTES = 14 * 1024 * 1024;
+const MAX_INLINE_PDF_BYTES = 2 * 1024 * 1024;
 
 /** Tried in order; the first that succeeds wins. */
 const CANDIDATE_MODELS = [
@@ -518,15 +520,16 @@ async function uploadToGeminiFiles(
   const uploadUrl = start.headers.get("x-goog-upload-url");
   if (!uploadUrl) throw new Error("files.start returned no upload URL");
 
-  const bytes = Buffer.from(await blob.arrayBuffer());
+  // Stream the Blob straight through — never ArrayBuffer/Buffer it, or a
+  // large PDF is copied into memory several times over.
   const done = await fetch(uploadUrl, {
     method: "POST",
     headers: {
-      "Content-Length": String(bytes.byteLength),
+      "Content-Length": String(blob.size),
       "X-Goog-Upload-Offset": "0",
       "X-Goog-Upload-Command": "upload, finalize",
     },
-    body: bytes,
+    body: blob,
   });
   if (!done.ok) {
     throw new Error(`files.upload HTTP ${done.status}: ${await done.text()}`);
