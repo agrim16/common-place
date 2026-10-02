@@ -297,7 +297,7 @@ export const generateQuiz = action({
     const topic = args.topic.trim();
     if (!topic) throw new Error("Name a topic first — e.g. “Photosynthesis”.");
 
-    const count = Math.min(Math.max(Math.trunc(args.count ?? 5), 3), 10);
+    const count = Math.min(Math.max(Math.trunc(args.count ?? 5), 1), 20);
     const apiKey = await requireApiKey();
 
     const note = args.noteId ? await ctx.runQuery(api.study.quizSource, {
@@ -323,7 +323,10 @@ export const generateQuiz = action({
 
     const payload = {
       contents: [{ role: "user" as const, parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.6, maxOutputTokens: 2048 },
+      generationConfig: {
+        temperature: 0.6,
+        maxOutputTokens: Math.min(8192, 800 + count * 320),
+      },
     };
 
     const { text, model } = await generateText(apiKey, payload);

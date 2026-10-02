@@ -15,7 +15,8 @@ type Question = {
   explanation: string;
 };
 
-const COUNTS = [3, 5, 8] as const;
+const MIN_QUESTIONS = 1;
+const MAX_QUESTIONS = 20;
 const LETTERS = ["A", "B", "C", "D", "E", "F"] as const;
 
 /** Stable empty so `?? []` doesn't rewire hook deps every render. */
@@ -35,6 +36,12 @@ const NO_ATTEMPTS: {
 export function QuizPanel() {
   const [topic, setTopic] = useState("");
   const [count, setCount] = useState<number>(5);
+
+  /** Any number the student likes, clamped to what one paper can hold. */
+  const questionCount = Math.min(
+    Math.max(Number.isFinite(count) ? Math.trunc(count) : MIN_QUESTIONS, MIN_QUESTIONS),
+    MAX_QUESTIONS,
+  );
   const [noteId, setNoteId] = useState<Id<"notes"> | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -83,7 +90,7 @@ export function QuizPanel() {
     try {
       const result = await generate({
         topic: trimmed,
-        count,
+        count: questionCount,
         noteId: noteId ?? undefined,
       });
       setQuestions(result.questions);
@@ -194,25 +201,28 @@ export function QuizPanel() {
           )}
 
           <div>
-            <span className="font-archive text-[10px] text-muted-foreground">
+            <label
+              htmlFor="quiz-count"
+              className="font-archive text-[10px] text-muted-foreground"
+            >
               How many questions
-            </span>
-            <div className="mt-1.5 flex gap-1.5">
-              {COUNTS.map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  disabled={busy}
-                  onClick={() => setCount(n)}
-                  className={`font-archive rounded-sm border px-3 py-2 text-[10px] transition-colors ${
-                    count === n
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {n}
-                </button>
-              ))}
+            </label>
+            <div className="mt-1.5 flex items-center gap-3">
+              <input
+                id="quiz-count"
+                type="number"
+                inputMode="numeric"
+                min={MIN_QUESTIONS}
+                max={MAX_QUESTIONS}
+                step={1}
+                value={count}
+                disabled={busy}
+                onChange={(e) => setCount(Number(e.target.value))}
+                className="h-9 w-20 rounded-md border border-input bg-background/80 px-3 text-sm"
+              />
+              <span className="font-archive text-[9px] leading-5 text-muted-foreground">
+                Any amount, up to {MAX_QUESTIONS} in one paper.
+              </span>
             </div>
           </div>
 
@@ -229,7 +239,7 @@ export function QuizPanel() {
               </>
             ) : (
               <>
-                <Sparkles className="size-4" /> Set the quiz
+                <Sparkles className="size-4" /> Set the {questionCount}-question quiz
               </>
             )}
           </Button>
